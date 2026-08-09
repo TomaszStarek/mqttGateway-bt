@@ -317,18 +317,18 @@ namespace MqttModbusGateway
                     await PublishJsonAsync($"{_thingName}/log", ev, _cts.Token);
 
                     var res = new ResultsToSend(
+                        DeviceId: ev.DeviceId,
+                        Timestamp: ev.Timestamp,
+                        Result: ev.Result,
+                        IsLoosening: ev.IsLoosening,
                         TargetTorqueLowNm: ev.TargetTorqueLowNm,
                         TargetTorqueHighNm: ev.TargetTorqueHighNm,
                         ConvertedTorqueNm: ev.ConvertedTorqueNm,
+                        TotalAngleDeg: ev.TotalAngleDeg,
                         TargetTorqueTriggerNm: ev.TargetTorqueTriggerNm,
                         DoubleDetectionAngleDeg: ev.DoubleDetectionAngleDeg,
                         TargetAngleLowDeg: ev.TargetAngleLowDeg,
                         TargetAngleHighDeg: ev.TargetAngleHighDeg,
-                        TotalAngleDeg: ev.TotalAngleDeg,
-                        IsLoosening: ev.IsLoosening,
-                        DeviceId: _cfg.Address,
-                        Timestamp: ev.Timestamp,
-                        Result: ev.Result,
                         StepId: ev.StepId
                     );
 
@@ -534,7 +534,7 @@ namespace MqttModbusGateway
 
                 Result: resultOk,
 
-                DeviceId: _cfg.DeviceId,
+                DeviceId: _cfg.Id.ToString(),
 
                 StepId: _currentStepId
             );
