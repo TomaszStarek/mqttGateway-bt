@@ -115,7 +115,8 @@ namespace MqttModbusGateway
 
         string DeviceId,
         string Timestamp,
-        bool Result
+        bool Result,
+        int? StepId
 
     );
 
@@ -137,7 +138,8 @@ namespace MqttModbusGateway
 
         string DeviceId,
         string Timestamp,
-        bool Result
+        bool Result,
+        int? StepId
     );
 
 
@@ -158,13 +160,11 @@ namespace MqttModbusGateway
         public string? AtCommand { get; set; }
 
         // configureJob
-        public float TorqueHighNm { get; set; }
-        public float TorqueLowNm { get; set; }
-
-        public int AngleHighDeg { get; set; }
-        public int AngleLowDeg { get; set; }
-        public int DoubleDetectionAngleDeg { get; set; }
-
-        public float TriggerNm { get; set; }
+        public float TargetTorqueNm { get; set; }
+        public float TorqueMinPercentage { get; set; }
+        public float TorqueMaxPercentage { get; set; }
+        public int MinAngleDeg { get; set; }
+        public float RotationStartThresholdPercentage { get; set; }
+        public int StepId { get; set; }
     }
 }

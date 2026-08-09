@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using MQTTnet;
 using MQTTnet.Protocol;
 using System;
@@ -25,8 +26,9 @@ namespace MqttModbusGateway
     ///
     /// Topic layout:
     /// <list type="bullet">
-    ///   <item><c>{thingName}/{deviceId}/data</c>  — fastening event payload</item>
-    ///   <item><c>{thingName}/{deviceId}/state</c> — connectivity state (connected / disconnected)</item>
+    ///   <item><c>{thingName}/{address}/data</c>  — fastening event payload</item>
+    ///   <item><c>{thingName}/{address}/state</c> — connectivity state (connected / disconnected)</item>
+    ///   <item><c>{thingName}/{address}/commands</c> — inbound commands (routed by <see cref="Gateway"/>)</item>
     /// </list>
     ///
     /// DF-3 frame format (manual §6.4):
@@ -59,14 +61,14 @@ namespace MqttModbusGateway
         // Fields
         // -----------------------------------------------------------------------
 
-        private readonly DeviceConfig   _cfg;
-        private readonly string         _thingName;
-        private readonly IMqttClient    _mqtt;
+        private readonly DeviceConfig _cfg;
+        private readonly string _thingName;
+        private readonly IMqttClient _mqtt;
         private readonly CancellationTokenSource _cts = new();
 
-        private Task?       _workerTask;
+        private Task? _workerTask;
         private SerialPort? _port;
-        private bool        _connected;
+        private bool _connected;
 
         private DateTime _lastResponseUtc = DateTime.MinValue;
 
@@ -76,7 +78,12 @@ namespace MqttModbusGateway
         private int _targetAngleLowDeg;
         private int _doubleDetectionAngleDeg;
         private float _targetTorqueTriggerNm;
+
+        /// <summary>ID of the job step from the last received "configureJob" command.</summary>
+        private int _currentStepId;
+
         private bool _initialStateSent = false;
+        private readonly ILogger<DeviceWorker> _logger;
 
         private readonly SemaphoreSlim _commandLock = new(1, 1);
 
@@ -97,12 +104,22 @@ namespace MqttModbusGateway
         /// <param name="cfg">Wrench connection parameters (COM port, baud rate, etc.).</param>
         /// <param name="thingName">AWS IoT Thing name used as the MQTT topic prefix.</param>
         /// <param name="mqtt">Connected MQTT client used for publishing telemetry.</param>
-        public DeviceWorker(DeviceConfig cfg, string thingName, IMqttClient mqtt)
+        public DeviceWorker(DeviceConfig cfg, string thingName, IMqttClient mqtt, ILogger<DeviceWorker> logger)
         {
-            _cfg       = cfg;
+            _cfg = cfg;
             _thingName = thingName;
-            _mqtt      = mqtt;
+            _mqtt = mqtt;
+            _logger = logger;
         }
+
+        /// <summary>
+        /// The COM port / address this worker is bound to. Used by <see cref="Gateway"/>
+        /// to route commands arriving on <c>{thingName}/{address}/commands</c> to this worker.
+        /// </summary>
+        public string Address => _cfg.Address;
+
+        /// <summary>The gateway-assigned device identifier for this worker.</summary>
+        public string DeviceId => _cfg.DeviceId;
 
         // -----------------------------------------------------------------------
         // Lifecycle
@@ -130,12 +147,12 @@ namespace MqttModbusGateway
             }
             catch (OperationCanceledException) when (_cts.IsCancellationRequested)
             {
-                Console.WriteLine($"[{_cfg.DeviceId}] Worker cancelled gracefully StopAsync.");
+                _logger.LogInformation($"[{_cfg.DeviceId}] Worker cancelled gracefully StopAsync.");
             }
 
             ClosePort();
             await PublishStateAsync(connected: false, CancellationToken.None, disconnectReason: "Worker stopped by app");
-            Console.WriteLine($"[{_cfg.DeviceId}] Worker stopped.");
+            _logger.LogInformation($"[{_cfg.DeviceId}] Worker stopped.");
         }
 
         // -----------------------------------------------------------------------
@@ -148,7 +165,7 @@ namespace MqttModbusGateway
         /// </summary>
         private async Task ReadLoopAsync(CancellationToken ct)
         {
-            Console.WriteLine($"[{_cfg.DeviceId}] Worker started");
+            _logger.LogInformation($"[{_cfg.DeviceId}] Worker started");
 
             while (!ct.IsCancellationRequested)
             {
@@ -166,7 +183,7 @@ namespace MqttModbusGateway
                     if (_connected &&
                         DateTime.UtcNow - _lastResponseUtc > TimeSpan.FromSeconds(10))
                     {
-                        Console.WriteLine(
+                        _logger.LogInformation(
                             $"[{_cfg.DeviceId}] Heartbeat timeout. Reconnecting...");
 
                         await HandleDisconnectAsync(ct, reason: "Heartbeat timeout. Reconnecting");
@@ -176,11 +193,11 @@ namespace MqttModbusGateway
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
-                    Console.WriteLine($"[{_cfg.DeviceId}] Worker cancelled gracefully ReadLoopAsync.");
+                    _logger.LogInformation($"[{_cfg.DeviceId}] Worker cancelled gracefully ReadLoopAsync.");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"[{_cfg.DeviceId}] Loop error: {ex.Message}");
+                    _logger.LogCritical($"[{_cfg.DeviceId}] Loop error: {ex.Message}");
                     await HandleDisconnectAsync(ct, reason: ex.Message);
                     await Task.Delay(ReconnectDelayMs, ct);
                 }
@@ -220,7 +237,7 @@ namespace MqttModbusGateway
 
                 _readTask = Task.Run(() => ReadLinesAsync(ct), ct);
 
-                Console.WriteLine($"[{_cfg.DeviceId}] Port {_cfg.Address} otwarty.");
+                _logger.LogInformation($"[{_cfg.DeviceId}] Port {_cfg.Address} otwarty.");
             }
             catch (Exception ex)
             {
@@ -228,7 +245,7 @@ namespace MqttModbusGateway
 
                 if (_connected || !_initialStateSent)
                 {
-                    Console.WriteLine($"[{_cfg.DeviceId}] Nie można otworzyć {_cfg.Address}: {ex.Message}");
+                    _logger.LogInformation($"[{_cfg.DeviceId}] Nie można otworzyć {_cfg.Address}: {ex.Message}");
                     _connected = false;
                     _initialStateSent = true;
                     await PublishStateAsync(connected: false, _cts.Token, disconnectReason: ex.Message);
@@ -255,11 +272,11 @@ namespace MqttModbusGateway
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
-                Console.WriteLine($"[{_cfg.DeviceId}] Worker cancelled gracefully ReadLinesAsync.");
+                _logger.LogInformation($"[{_cfg.DeviceId}] Worker cancelled gracefully ReadLinesAsync.");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[{_cfg.DeviceId}] Błąd odczytu: {ex.Message}");
+                _logger.LogInformation($"[{_cfg.DeviceId}] Błąd odczytu: {ex.Message}");
                 await HandleDisconnectAsync(ct);
             }
         }
@@ -283,11 +300,11 @@ namespace MqttModbusGateway
                 return;
             }
 
-            Console.WriteLine($"[{_cfg.DeviceId}] RX: {line}");
+            _logger.LogInformation($"[{_cfg.DeviceId}] RX: {line}");
 
             if (!line.StartsWith("RE,", StringComparison.OrdinalIgnoreCase))
             {
-                Console.WriteLine($"[{_cfg.DeviceId}] Ignored: {line}");
+                _logger.LogInformation($"[{_cfg.DeviceId}] Ignored: {line}");
                 return;
             }
 
@@ -311,15 +328,17 @@ namespace MqttModbusGateway
                         IsLoosening: ev.IsLoosening,
                         DeviceId: _cfg.Address,
                         Timestamp: ev.Timestamp,
-                        Result: ev.Result
+                        Result: ev.Result,
+                        StepId: ev.StepId
                     );
 
                     await PublishJsonAsync($"{_thingName}/{_cfg.Address}/data", res, _cts.Token);
 
 
 
-                    Console.WriteLine(
+                    _logger.LogInformation(
                         $"[{_cfg.DeviceId}] Event #{ev.EventCount} — " +
+                        $"StepId: {ev.StepId}, " +
                         $"TorqueTaget: {ev.TargetTorqueLowNm:F2}-{ev.TargetTorqueHighNm}, " +
                         $"Torque: {ev.ConvertedTorqueNm:F2}, " +
                         $"AngleTarget: {ev.TargetAngleLowDeg:F2}-{ev.TargetAngleHighDeg}, " +
@@ -329,7 +348,7 @@ namespace MqttModbusGateway
             }
             else
             {
-                Console.WriteLine($"[{_cfg.DeviceId}] Parse failed: {line}");
+                _logger.LogWarning($"[{_cfg.DeviceId}] Parse failed: {line}");
             }
         }
 
@@ -341,18 +360,6 @@ namespace MqttModbusGateway
 
             try
             {
-                //string cmd = "AT023,1234567\r\n";
-
-                //   string cmd = "AT008,06\r\n";
-                //   string cmd = "AT037,20.00,15.00,01\r\n";
-
-                //string cmd1 = "AT045,04.00\r\n";   // przykład: 5.00 Nm
-                //byte[] bytes1 = Encoding.ASCII.GetBytes(cmd1);
-                //_port.Write(bytes1, 0, bytes1.Length);
-
-                //await Task.Delay(1000);
-
-                //string cmd = "AT046,000,015,100\r\n"; AT046,000,015,100
                 string cmd = "q\r\n";
 
                 byte[] bytes = Encoding.ASCII.GetBytes(cmd);
@@ -360,11 +367,11 @@ namespace MqttModbusGateway
                 await Task.Run(() =>
                     _port.Write(bytes, 0, bytes.Length));
 
-              //  Console.WriteLine($"[{_cfg.DeviceId}] Heartbeat sent");
+                //  Console.WriteLine($"[{_cfg.DeviceId}] Heartbeat sent");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[{_cfg.DeviceId}] Heartbeat write failed: {ex.Message}");
+                _logger.LogWarning($"[{_cfg.DeviceId}] Heartbeat write failed: {ex.Message}");
 
                 throw;
             }
@@ -377,11 +384,11 @@ namespace MqttModbusGateway
         /// </summary>
         private async Task HandleDisconnectAsync(CancellationToken ct, string reason = "communication error")
         {
-            
+
             if (_connected)
             {
                 _connected = false;
-                 await PublishStateAsync(connected: false, ct, disconnectReason: reason);
+                await PublishStateAsync(connected: false, ct, disconnectReason: reason);
             }
 
             ClosePort();
@@ -392,7 +399,7 @@ namespace MqttModbusGateway
         /// </summary>
         private void ClosePort()
         {
-            try { _port?.Close();   } catch { }
+            try { _port?.Close(); } catch { }
             try { _port?.Dispose(); } catch { }
             _port = null;
         }
@@ -433,7 +440,7 @@ namespace MqttModbusGateway
 
             if (fields.Length != 10)
             {
-                Console.WriteLine(
+                _logger.LogWarning(
                     $"[{_cfg.DeviceId}] Invalid field count: {fields.Length}");
                 return false;
             }
@@ -496,7 +503,7 @@ namespace MqttModbusGateway
                     _cfg.SerialNumber,
                     StringComparison.OrdinalIgnoreCase))
             {
-                Console.WriteLine(
+                _logger.LogInformation(
                     $"[{_cfg.DeviceId}] Serial mismatch: {frameSerial}");
 
                 return false;
@@ -527,7 +534,9 @@ namespace MqttModbusGateway
 
                 Result: resultOk,
 
-                DeviceId: _cfg.DeviceId
+                DeviceId: _cfg.DeviceId,
+
+                StepId: _currentStepId
             );
 
             return true;
@@ -548,12 +557,12 @@ namespace MqttModbusGateway
                 string[] dp = datePart.Split('/');
                 string[] tp = timePart.Split(':');
 
-                int year  = 2000 + int.Parse(dp[0]);
+                int year = 2000 + int.Parse(dp[0]);
                 int month = int.Parse(dp[1]);
-                int day   = int.Parse(dp[2]);
-                int hour  = int.Parse(tp[0]);
-                int min   = int.Parse(tp[1]);
-                int sec   = int.Parse(tp[2]);
+                int day = int.Parse(dp[2]);
+                int hour = int.Parse(tp[0]);
+                int min = int.Parse(tp[1]);
+                int sec = int.Parse(tp[2]);
 
                 // The wrench clock is local time; we tag it as UTC here.
                 // In a real deployment you may want to apply a UTC offset.
@@ -580,24 +589,24 @@ namespace MqttModbusGateway
         {
             if (_port is null || !_port.IsOpen)
             {
-                Console.WriteLine($"[{_cfg.DeviceId}] Command dropped — port not open.");
+                _logger.LogWarning($"[{_cfg.DeviceId}] Command dropped — port not open.");
                 return;
             }
 
             try
             {
                 // AT commands must be terminated with CRLF (manual §6.5).
-                string frame = cmd.AtCommand.TrimEnd() + "\r\n";
+                string frame = cmd.AtCommand!.TrimEnd() + "\r\n";
                 byte[] bytes = Encoding.ASCII.GetBytes(frame);
 
                 // Serial writes are synchronous; run on thread pool.
                 await Task.Run(() => _port.Write(bytes, 0, bytes.Length));
 
-                Console.WriteLine($"[{_cfg.DeviceId}] Command sent: {cmd.AtCommand}");
+                _logger.LogInformation($"[{_cfg.DeviceId}] Command sent: {cmd.AtCommand}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[{_cfg.DeviceId}] Command error: {ex.Message}");
+                _logger.LogCritical($"[{_cfg.DeviceId}] Command error: {ex.Message}");
             }
         }
 
@@ -606,7 +615,7 @@ namespace MqttModbusGateway
         // -----------------------------------------------------------------------
 
         /// <summary>
-        /// Publishes a connectivity state change to <c>{thingName}/{deviceId}/state</c>.
+        /// Publishes a connectivity state change to <c>{thingName}/{address}/state</c>.
         /// </summary>
         private async Task PublishStateAsync(bool connected, CancellationToken ct, string? disconnectReason = null)
         {
@@ -643,13 +652,27 @@ namespace MqttModbusGateway
             await _mqtt.PublishAsync(msg, ct);
         }
 
+        /// <summary>
+        /// Applies a "configureJob" command: stores the target/limit values so subsequent
+        /// fastening events are tagged with them, remembers <paramref name="stepId"/>,
+        /// and pushes the AT037 / AT045 / AT046 frames to the wrench.
+        /// </summary>
+        /// <param name="torqueHighNm">Upper torque limit [Nm] (target * TorqueMaxPercentage / 100).</param>
+        /// <param name="torqueLowNm">Lower torque limit [Nm] (target * TorqueMinPercentage / 100).</param>
+        /// <param name="angleHighDeg">Upper angle limit [deg]. Effectively unused — sent as protocol max.</param>
+        /// <param name="angleLowDeg">Lower/minimum angle [deg], from the configurator.</param>
+        /// <param name="doubleDetectionAngleDeg">Not used — always 0.</param>
+        /// <param name="triggerNm">Torque at which angle measurement starts [Nm]
+        /// (target * RotationStartThresholdPercentage / 100).</param>
+        /// <param name="stepId">ID of the selected job step, stored and attached to future events.</param>
         public async Task ConfigureJobAsync(
             float torqueHighNm,
             float torqueLowNm,
             int angleHighDeg,
             int angleLowDeg,
             int doubleDetectionAngleDeg,
-            float triggerNm)
+            float triggerNm,
+            int stepId)
         {
             await _commandLock.WaitAsync();
 
@@ -661,7 +684,8 @@ namespace MqttModbusGateway
                     angleHighDeg,
                     angleLowDeg,
                     doubleDetectionAngleDeg,
-                    triggerNm);
+                    triggerNm,
+                    stepId);
 
                 // ------------------------------------------------
                 // AT037
@@ -696,7 +720,7 @@ namespace MqttModbusGateway
 
                 // ------------------------------------------------
                 // AT046
-                // angle limits
+                // angle limits (double-detection, low, high) — all 3-digit fields
                 // ------------------------------------------------
 
                 string at046 =
@@ -709,8 +733,10 @@ namespace MqttModbusGateway
 
                 await ExecuteRawInternalAsync(at046);
 
-                Console.WriteLine(
-                    $"[{_cfg.DeviceId}] Job configured");
+                _logger.LogInformation(
+                    $"[{_cfg.DeviceId}] Job configured — StepId={stepId}, " +
+                    $"Torque={torqueLowNm:F2}-{torqueHighNm:F2}Nm, Trigger={triggerNm:F2}Nm, " +
+                    $"Angle>={angleLowDeg}deg (upper unchecked)");
             }
             finally
             {
@@ -722,7 +748,7 @@ namespace MqttModbusGateway
         {
             if (_port is null || !_port.IsOpen)
             {
-                Console.WriteLine(
+                _logger.LogInformation(
                     $"[{_cfg.DeviceId}] Port not open");
 
                 return;
@@ -735,7 +761,7 @@ namespace MqttModbusGateway
             await Task.Run(() =>
                 _port.Write(bytes, 0, bytes.Length));
 
-            Console.WriteLine(
+            _logger.LogInformation(
                 $"[{_cfg.DeviceId}] TX: {command}");
         }
 
@@ -759,7 +785,8 @@ namespace MqttModbusGateway
             int angleHighDeg,
             int angleLowDeg,
             int doubleDetectionAngleDeg,
-            float triggerNm)
+            float triggerNm,
+            int stepId)
         {
             _targetTorqueHighNm = torqueHighNm;
             _targetTorqueLowNm = torqueLowNm;
@@ -771,6 +798,8 @@ namespace MqttModbusGateway
                 doubleDetectionAngleDeg;
 
             _targetTorqueTriggerNm = triggerNm;
+
+            _currentStepId = stepId;
         }
 
         // -----------------------------------------------------------------------

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using MQTTnet;
 using System;
 using System.Collections.Generic;
@@ -21,8 +22,8 @@ namespace MqttModbusGateway
     ///         with automatic reconnect.</item>
     ///   <item>Reacts to a JSON configuration message on <c>{thingName}/config</c>
     ///         by spawning a <see cref="DeviceWorker"/> for every declared wrench.</item>
-    ///   <item>Routes AT write-commands arriving on <c>{thingName}/{deviceId}/commands</c>
-    ///         to the appropriate <see cref="DeviceWorker"/>.</item>
+    ///   <item>Routes commands arriving on <c>{thingName}/{address}/commands</c>
+    ///         to the <see cref="DeviceWorker"/> bound to that address (COM port).</item>
     /// </list>
     ///
     /// Configuration payload example (published to <c>{thingName}/config</c>):
@@ -35,13 +36,31 @@ namespace MqttModbusGateway
     ///   ]
     /// }
     /// </code>
+    ///
+    /// Command payload example (published to <c>{thingName}/{address}/commands</c>):
+    /// <code>
+    /// {
+    ///   "type": "configureJob",
+    ///   "targetTorqueNm": 10.0,
+    ///   "torqueMinPercentage": 10,
+    ///   "torqueMaxPercentage": 10,
+    ///   "minAngleDeg": 15,
+    ///   "rotationStartThresholdPercentage": 10,
+    ///   "stepId": 1
+    /// }
+    /// </code>
     /// </summary>
     internal sealed class Gateway : IAsyncDisposable
     {
-        // -----------------------------------------------------------------------
-        // Fields
-        // -----------------------------------------------------------------------
+        /// <summary>
+        /// Upper angle bound sent to the wrench when the caller doesn't want the
+        /// upper angle limit enforced. The AT046 frame uses 3-digit fields, so this
+        /// is the practical "don't check" maximum (999), not a literal 9999.
+        /// </summary>
+        private const int UnboundedAngleHighDeg = 999;
 
+        private readonly ILoggerFactory _loggerFactory;
+        private readonly ILogger<Gateway> _logger;
         private readonly string _thingName;
         private readonly string _mqttBroker;
         private readonly string _certPath;
@@ -52,10 +71,6 @@ namespace MqttModbusGateway
 
         /// <summary>Active device workers, keyed by DeviceId.</summary>
         private readonly Dictionary<string, DeviceWorker> _workers = new();
-
-        // -----------------------------------------------------------------------
-        // Constructor
-        // -----------------------------------------------------------------------
 
         /// <summary>
         /// Initialises a new <see cref="Gateway"/> instance.
@@ -71,13 +86,16 @@ namespace MqttModbusGateway
             string mqttBroker,
             string certPath,
             string keyPath,
-            string caPath)
+            string caPath,
+            ILoggerFactory loggerFactory)
         {
-            _thingName  = thingName;
+            _thingName = thingName;
             _mqttBroker = mqttBroker;
-            _certPath   = certPath;
-            _keyPath    = keyPath;
-            _caPath     = caPath;
+            _certPath = certPath;
+            _keyPath = keyPath;
+            _caPath = caPath;
+            _loggerFactory = loggerFactory;
+            _logger = loggerFactory.CreateLogger<Gateway>();
         }
 
         // -----------------------------------------------------------------------
@@ -92,7 +110,7 @@ namespace MqttModbusGateway
         {
             await ConnectMqttAsync(ct);
 
-            Console.WriteLine("Gateway running. Waiting for config message on " +
+            _logger.LogInformation("Gateway running. Waiting for config message on " +
                               $"'{_thingName}/config'. Press Ctrl+C to exit.");
 
             try
@@ -101,7 +119,7 @@ namespace MqttModbusGateway
             }
             catch (OperationCanceledException)
             {
-                Console.WriteLine("Gateway shutting down…");
+                _logger.LogWarning("Gateway shutting down…");
             }
         }
 
@@ -121,29 +139,26 @@ namespace MqttModbusGateway
 
             _mqtt.DisconnectedAsync += async _ =>
             {
-                Console.WriteLine("MQTT: disconnected from AWS IoT — reconnecting in 5 s…");
+                _logger.LogInformation("MQTT: disconnected from AWS IoT — reconnecting in 5 s…");
                 await Task.Delay(5_000);
 
                 try
                 {
                     await _mqtt.ConnectAsync(_mqtt.Options, CancellationToken.None);
-                    Console.WriteLine("MQTT: reconnected ✓");
+                    _logger.LogInformation("MQTT: reconnected ✓");
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"MQTT: reconnect failed — {ex.Message}");
+                    _logger.LogCritical($"MQTT: reconnect failed — {ex.Message}");
                 }
             };
 
             await TryMqttConnectAsync(ct);
 
-            // Subscribe to:
-            //   {thingName}/config          — new wrench configuration
-            //   {thingName}/+/commands      — write commands for individual wrenches
             await _mqtt.SubscribeAsync($"{_thingName}/config");
             await _mqtt.SubscribeAsync($"{_thingName}/+/commands");
 
-            Console.WriteLine("MQTT: subscriptions active.");
+            _logger.LogInformation("MQTT: subscriptions active.");
         }
 
         /// <summary>
@@ -153,14 +168,14 @@ namespace MqttModbusGateway
         private async Task TryMqttConnectAsync(CancellationToken ct)
         {
             if (!File.Exists(_certPath)) throw new FileNotFoundException($"Device cert not found: {_certPath}");
-            if (!File.Exists(_keyPath))  throw new FileNotFoundException($"Private key not found: {_keyPath}");
-            if (!File.Exists(_caPath))   throw new FileNotFoundException($"Root CA not found: {_caPath}");
+            if (!File.Exists(_keyPath)) throw new FileNotFoundException($"Private key not found: {_keyPath}");
+            if (!File.Exists(_caPath)) throw new FileNotFoundException($"Root CA not found: {_caPath}");
 
             try
             {
-                using var tempCert  = X509Certificate2.CreateFromPemFile(_certPath, _keyPath);
-                var       clientCert = new X509Certificate2(tempCert.Export(X509ContentType.Pkcs12));
-                var       caCert     = new X509Certificate2(_caPath);
+                using var tempCert = X509Certificate2.CreateFromPemFile(_certPath, _keyPath);
+                var clientCert = new X509Certificate2(tempCert.Export(X509ContentType.Pkcs12));
+                var caCert = new X509Certificate2(_caPath);
 
                 var options = new MqttClientOptionsBuilder()
                     .WithTcpServer(_mqttBroker, 8883)
@@ -181,13 +196,13 @@ namespace MqttModbusGateway
                     }))
                     .Build();
 
-                Console.WriteLine($"MQTT: connecting to {_mqttBroker}…");
+                _logger.LogInformation($"MQTT: connecting to {_mqttBroker}…");
                 await _mqtt!.ConnectAsync(options, ct);
-                Console.WriteLine("MQTT: connected");
+                _logger.LogInformation("MQTT: connected");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"MQTT: connection error — {ex.Message}");
+                _logger.LogCritical($"MQTT: connection error — {ex.Message}");
                 throw;
             }
         }
@@ -201,36 +216,24 @@ namespace MqttModbusGateway
         ///
         /// Supported topics:
         /// <list type="bullet">
-        ///   <item><c>{thingName}/config</c>               → <see cref="HandleConfigMessageAsync"/></item>
-        ///   <item><c>{thingName}/{deviceId}/commands</c>  → <see cref="HandleCommandMessageAsync"/></item>
+        ///   <item><c>{thingName}/config</c>              → <see cref="HandleConfigMessageAsync"/></item>
+        ///   <item><c>{thingName}/{address}/commands</c>  → <see cref="HandleCommandMessageAsync"/></item>
         /// </list>
         /// </summary>
         private async Task OnMessageAsync(MqttApplicationMessageReceivedEventArgs args)
         {
             try
             {
-                string topic   = args.ApplicationMessage.Topic;
+                string topic = args.ApplicationMessage.Topic;
                 string payload = args.ApplicationMessage.ConvertPayloadToString();
 
-                Console.WriteLine(new string('-', 50));
-                Console.WriteLine($"[MQTT IN] {DateTime.Now:HH:mm:ss}  {topic}");
-                Console.WriteLine($"Payload : {payload}");
-                Console.WriteLine(new string('-', 50));
+                _logger.LogInformation(new string('-', 50));
+                _logger.LogInformation($"[MQTT IN] {DateTime.Now:HH:mm:ss}  {topic}");
+                _logger.LogInformation($"Payload : {payload}");
+                _logger.LogInformation(new string('-', 50));
 
                 if (topic == $"{_thingName}/config")
                 {
-                //    payload = """
-                //{
-                //  "devices": [
-                //    {
-                //      "deviceId": "LINE1",
-                //      "comPort": "COM11"
-                //    }
-
-                //  ]
-                //}
-                //""";
-
                     await HandleConfigMessageAsync(payload);
                     return;
                 }
@@ -241,11 +244,11 @@ namespace MqttModbusGateway
                     return;
                 }
 
-                Console.WriteLine($"[MQTT] Unhandled topic: {topic}");
+                _logger.LogInformation($"[MQTT] Unhandled topic: {topic}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[MQTT] Message handler error: {ex.Message}");
+                _logger.LogCritical($"[MQTT] Message handler error: {ex.Message}");
             }
         }
 
@@ -276,26 +279,26 @@ namespace MqttModbusGateway
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[Config] JSON parse error: {ex.Message}");
+                _logger.LogInformation($"[Config] JSON parse error: {ex.Message}");
                 return;
             }
 
             if (config is null || config.Devices.Count == 0)
             {
-                Console.WriteLine("[Config] Received empty or invalid configuration — ignoring.");
+                _logger.LogInformation("[Config] Received empty or invalid configuration — ignoring.");
                 return;
             }
 
             if (!config.IsActive)
             {
-                Console.WriteLine("[Config] isActive=false — stopping all device workers.");
+                _logger.LogInformation("[Config] isActive=false — stopping all device workers.");
 
                 foreach (var key in _workers.Keys.ToList())
                 {
                     await _workers[key].StopAsync();
                     _workers[key].Dispose();
                     _workers.Remove(key);
-                    Console.WriteLine($"[Config] Stopped worker for {key}");
+                    _logger.LogInformation($"[Config] Stopped worker for {key}");
                 }
 
                 return;
@@ -306,28 +309,29 @@ namespace MqttModbusGateway
                 // IpAddress pełni rolę COM portu
                 if (string.IsNullOrWhiteSpace(deviceCfg.Address))
                 {
-                    Console.WriteLine($"[Config] Skipping device Id={deviceCfg.Id} — missing IpAddress/ComPort.");
+                    _logger.LogInformation($"[Config] Skipping device Id={deviceCfg.Id} — missing IpAddress/ComPort.");
                     continue;
                 }
 
                 if (_workers.TryGetValue(deviceCfg.DeviceId, out DeviceWorker? existing))
                 {
-                    Console.WriteLine($"[Config] Replacing existing worker for {deviceCfg.DeviceId}…");
+                    _logger.LogInformation($"[Config] Replacing existing worker for {deviceCfg.DeviceId}…");
                     await existing.StopAsync();
                     existing.Dispose();
                     _workers.Remove(deviceCfg.DeviceId);
                 }
 
-                var worker = new DeviceWorker(deviceCfg, _thingName, _mqtt!);
+                var workerLogger = _loggerFactory.CreateLogger<DeviceWorker>(); // logger for new worker
+                var worker = new DeviceWorker(deviceCfg, _thingName, _mqtt!, workerLogger);
                 _workers[deviceCfg.DeviceId] = worker;
                 worker.Start();
 
-                Console.WriteLine(
+                _logger.LogInformation(
                     $"[Config] Worker started — DeviceId={deviceCfg.DeviceId}, " +
                     $"Port={deviceCfg.Address}, Baud={deviceCfg.BaudRate}");
             }
 
-            Console.WriteLine($"[Config] Active workers: {_workers.Count}");
+            _logger.LogInformation($"[Config] Active workers: {_workers.Count}");
         }
 
         // -----------------------------------------------------------------------
@@ -335,14 +339,14 @@ namespace MqttModbusGateway
         // -----------------------------------------------------------------------
 
         /// <summary>
-        /// Forwards an AT command from the MQTT commands topic to the target wrench worker.
+        /// Forwards a command from <c>{thingName}/{address}/commands</c> to the worker
+        /// bound to that address (COM port).
         ///
-        /// Expected topic format: <c>{thingName}/{deviceId}/commands</c>
-        ///
-        /// Payload example:
-        /// <code>
-        /// { "atCommand": "AT037,45.00,30.00" }
-        /// </code>
+        /// Supported command types:
+        /// <list type="bullet">
+        ///   <item><c>"raw"</c> — sends <c>atCommand</c> verbatim, e.g. <c>{ "type": "raw", "atCommand": "AT037,45.00,30.00" }</c>.</item>
+        ///   <item><c>"configureJob"</c> — see <see cref="Command"/> for the full payload shape.</item>
+        /// </list>
         /// </summary>
         private async Task HandleCommandMessageAsync(
             string topic,
@@ -352,20 +356,23 @@ namespace MqttModbusGateway
 
             if (parts.Length != 3)
             {
-                Console.WriteLine(
+                _logger.LogCritical(
                     $"[CMD] Unexpected topic format: {topic}");
 
                 return;
             }
 
-            string deviceId = parts[1];
+            // parts[1] is the wrench address (COM port), not the DeviceId —
+            // matches the {address}/data and {address}/state topics DeviceWorker publishes on.
+            string address = parts[1];
 
-            if (!_workers.TryGetValue(
-                    deviceId,
-                    out DeviceWorker? worker))
+            DeviceWorker? worker = _workers.Values.FirstOrDefault(w =>
+                string.Equals(w.Address, address, StringComparison.OrdinalIgnoreCase));
+
+            if (worker is null)
             {
-                Console.WriteLine(
-                    $"[CMD] No active worker for device '{deviceId}'.");
+                _logger.LogInformation(
+                    $"[CMD] No active worker for address '{address}'.");
 
                 return;
             }
@@ -383,7 +390,7 @@ namespace MqttModbusGateway
             }
             catch (Exception ex)
             {
-                Console.WriteLine(
+                _logger.LogCritical(
                     $"[CMD] JSON parse error: {ex.Message}");
 
                 return;
@@ -391,13 +398,13 @@ namespace MqttModbusGateway
 
             if (cmd is null)
             {
-                Console.WriteLine(
+                _logger.LogCritical(
                     "[CMD] Null command");
 
                 return;
             }
 
-            Console.WriteLine(
+            _logger.LogInformation(
                 $"[CMD] Type = {cmd.Type}");
 
             switch (cmd.Type?.ToLowerInvariant())
@@ -408,13 +415,28 @@ namespace MqttModbusGateway
 
                 case "configurejob":
 
+                    // Absolute torque limits are % of the target torque (from the configurator).
+                    float torqueLowNm = cmd.TargetTorqueNm * cmd.TorqueMinPercentage / 100f;
+                    float torqueHighNm = cmd.TargetTorqueNm * cmd.TorqueMaxPercentage / 100f;
+
+                    // Angle upper limit is not enforced — send the protocol's practical max.
+                    int angleLowDeg = cmd.MinAngleDeg;
+                    int angleHighDeg = UnboundedAngleHighDeg;
+
+                    // Double-detection angle is not used in this deployment.
+                    int doubleDetectionAngleDeg = 0;
+
+                    // Torque at which angle measurement starts, also a % of target torque.
+                    float triggerNm = cmd.TargetTorqueNm * cmd.RotationStartThresholdPercentage / 100f;
+
                     await worker.ConfigureJobAsync(
-                        cmd.TorqueHighNm,
-                        cmd.TorqueLowNm,
-                        cmd.AngleHighDeg,
-                        cmd.AngleLowDeg,
-                        cmd.DoubleDetectionAngleDeg,
-                        cmd.TriggerNm);
+                        torqueHighNm,
+                        torqueLowNm,
+                        angleHighDeg,
+                        angleLowDeg,
+                        doubleDetectionAngleDeg,
+                        triggerNm,
+                        cmd.StepId);
 
                     break;
 
@@ -426,7 +448,7 @@ namespace MqttModbusGateway
 
                     if (string.IsNullOrWhiteSpace(cmd.AtCommand))
                     {
-                        Console.WriteLine(
+                        _logger.LogInformation(
                             "[CMD] Raw command missing AtCommand");
 
                         return;
@@ -443,7 +465,7 @@ namespace MqttModbusGateway
 
                 default:
 
-                    Console.WriteLine(
+                    _logger.LogInformation(
                         $"[CMD] Unknown command type: {cmd.Type}");
 
                     break;
@@ -459,7 +481,7 @@ namespace MqttModbusGateway
         /// </summary>
         public async ValueTask DisposeAsync()
         {
-            Console.WriteLine("Stopping gateway…");
+            _logger.LogInformation("Stopping gateway…");
 
             // Stop all workers in parallel for faster shutdown.
             await Task.WhenAll(_workers.Values.Select(async w =>
@@ -478,7 +500,7 @@ namespace MqttModbusGateway
                 _mqtt.Dispose();
             }
 
-            Console.WriteLine("Gateway stopped.");
+            _logger.LogInformation("Gateway stopped.");
         }
     }
 }

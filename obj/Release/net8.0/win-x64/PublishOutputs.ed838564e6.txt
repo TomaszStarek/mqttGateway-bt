@@ -1,0 +1,7 @@
+C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Release\net8.0\win-x64\publish\MqttModbusGateway.pdb
+C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Release\net8.0\win-x64\publish\certs\85488670d8d0a3d3932da26e0ce51ba9ba1a0d7508777175cb78781a7494b42f-public.pem.key
+C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Release\net8.0\win-x64\publish\certs\AmazonRootCA1.pem
+C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Release\net8.0\win-x64\publish\certs\AmazonRootCA3.pem
+C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Release\net8.0\win-x64\publish\certs\certificate.pem.crt
+C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Release\net8.0\win-x64\publish\certs\private.pem.key
+C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Release\net8.0\win-x64\publish\MqttModbusGateway.exe
