@@ -272,8 +272,8 @@ namespace MqttModbusGateway
                 return;
             }
 
-            float torqueLowNm = cmd.TargetTorqueNm * cmd.TorqueMinPercentage / 100f;
-            float torqueHighNm = cmd.TargetTorqueNm * cmd.TorqueMaxPercentage / 100f;
+            float torqueLowNm = cmd.TargetTorqueNm * 90 / 100f;
+            float torqueHighNm = cmd.TargetTorqueNm * 120 / 100f;
             int angleLowDeg = cmd.MinAngleDeg;
             int angleHighDeg = UnboundedAngleHighDeg;
             int doubleDetectionAngleDeg = 0;
@@ -288,7 +288,8 @@ namespace MqttModbusGateway
                 triggerNm,
                 cmd.StepId,
                 cmd.BatchId,
-                cmd.UserId);
+                cmd.UserId,
+                cmd.DeviceId);
         }
 
         public async ValueTask DisposeAsync()

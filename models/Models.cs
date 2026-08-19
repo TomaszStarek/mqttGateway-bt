@@ -62,7 +62,7 @@ namespace MqttModbusGateway
         int TargetAngleHighDeg,
         int TotalAngleDeg,
         bool IsLoosening,
-        string DeviceId,
+        int DeviceId,
         string Timestamp,
         bool Result,
         int StepId,
@@ -74,17 +74,28 @@ namespace MqttModbusGateway
     /// Payload matching the TorqueLog structure for downstream services.
     /// </summary>
     public record ResultsToSend(
-        string DeviceId,
-        int StepId,
-        int BatchId,
-        int UserId,
-        float ConvertedTorqueNm,
         float TargetTorqueLowNm,
         float TargetTorqueHighNm,
-        float TotalAngleDeg,
+        float ConvertedTorqueNm,
+
+        int TargetSpeedRpm,
+        int FasteningTimeMs,
+
+        int A1Deg,
+        int A2Deg,
+
+        int TotalAngleDeg,
+
         bool IsLoosening,
-        bool StatusPass,
-        string Timestamp
+
+        int SnugTorqueAngle,
+
+        bool Result,
+        int StepId,
+        int DeviceId,
+        int BatchId,
+        int UserId
+
     );
 
     public class Command
@@ -99,5 +110,6 @@ namespace MqttModbusGateway
         public int StepId { get; set; }
         public int BatchId { get; set; }
         public int UserId { get; set; }
+        public int DeviceId { get; set; }
     }
 }
