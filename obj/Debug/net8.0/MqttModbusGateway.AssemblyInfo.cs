@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MqttModbusGateway")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+60bc57c1ae2e3a0e417350986b147b19450af53f")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+451028ef97c644d3e1ca56eb0af8894a0c5d3a9b")]
 [assembly: System.Reflection.AssemblyProductAttribute("MqttModbusGateway")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MqttModbusGateway")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

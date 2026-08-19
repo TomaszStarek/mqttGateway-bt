@@ -18,7 +18,7 @@ public class ServiceWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Uruchamianie usługi bramki MQTT-Modbus...");
+        _logger.LogInformation("Starting the MQTT - Modbus gateway service...");
 
         var computerName = Environment.MachineName;
         string thingName = $"{computerName}-bt";
@@ -41,7 +41,7 @@ public class ServiceWorker : BackgroundService
 
             await _gateway.RunAsync(stoppingToken);
 
-            _logger.LogInformation("Bramka działa poprawnie. Oczekiwanie na sygnały zamknięcia lub rekonfiguracji.");
+            _logger.LogInformation("The gateway is working properly. Waiting for close or reconfiguration signals.");
 
             // Usługa teraz "czuwa". Pętla kręci się dopóki Windows nie wyśle sygnału STOP (który anuluje stoppingToken)
             while (!stoppingToken.IsCancellationRequested)
@@ -52,11 +52,11 @@ public class ServiceWorker : BackgroundService
         }
         catch (OperationCanceledException)
         {
-            _logger.LogWarning("Usługa otrzymała systemowy sygnał zatrzymania.");
+            _logger.LogWarning("The service received a system stop signal.");
         }
         catch (Exception ex)
         {
-            _logger.LogCritical(ex, "Krytyczny błąd podczas działania usługi!");
+            _logger.LogCritical(ex, "Critical error while running the service!");
             throw; // Rzucenie wyjątku przekaże błąd do Event Viewera i pozwoli systemowi zrestartować usługę
         }
         finally
@@ -65,11 +65,11 @@ public class ServiceWorker : BackgroundService
             // wywołujemy Twój kod czyszczący połączenia MQTT i zatrzymujący DeviceWorkers.
             if (_gateway is not null)
             {
-                _logger.LogInformation("Zamykanie bramki i zwalnianie zasobów (Graceful Shutdown)...");
+                _logger.LogInformation("Closing the gateway and releasing resources (Graceful Shutdown)...");
                 await _gateway.DisposeAsync();
             }
         }
 
-        _logger.LogInformation("Usługa została bezpiecznie zatrzymana.");
+        _logger.LogInformation("The service has been safely stopped.");
     }
 }

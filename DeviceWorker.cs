@@ -46,6 +46,8 @@ namespace MqttModbusGateway
         private int _currentStepId;
         private int _currentBatchId;
         private int _currentUserId;
+        private int _currentDeviceId;
+
 
         public DeviceWorker(DeviceConfig cfg, string thingName, IMqttClient mqtt, ILogger<DeviceWorker> logger)
         {
@@ -227,9 +229,13 @@ namespace MqttModbusGateway
                         TargetTorqueLowNm: ev.TargetTorqueLowNm,
                         TargetTorqueHighNm: ev.TargetTorqueHighNm,
                         TotalAngleDeg: ev.TotalAngleDeg,
-                        IsLoosening: ev.IsLoosening,
-                        StatusPass: ev.Result,
-                        Timestamp: ev.Timestamp
+                        IsLoosening: true,
+                        Result: ev.Result,
+                        TargetSpeedRpm: 0,
+                        FasteningTimeMs: 0,
+                        A1Deg: 0,
+                        A2Deg: 0,
+                        SnugTorqueAngle: 0
                     );
 
                     await PublishJsonAsync($"{_thingName}/{_cfg.Address}/data", res, _cts.Token);
@@ -328,7 +334,7 @@ namespace MqttModbusGateway
 
             string judgment = fields[6].Trim().ToUpperInvariant();
             bool torqueOk = judgment[0] == 'O';
-            bool angleOk = judgment[1] == 'O';
+            bool angleOk = true;//judgment[1] == 'O';
             bool resultOk = torqueOk && angleOk;
 
             string frameSerial = fields[7].Trim();
@@ -355,7 +361,7 @@ namespace MqttModbusGateway
                 TotalAngleDeg: angleAbs,
                 Timestamp: timestamp,
                 Result: resultOk,
-                DeviceId: _cfg.Id.ToString(),
+                DeviceId: _currentDeviceId,
                 StepId: _currentStepId,
                 BatchId: _currentBatchId,
                 UserId: _currentUserId
@@ -449,7 +455,8 @@ namespace MqttModbusGateway
             float triggerNm,
             int stepId,
             int batchId,
-            int userId)
+            int userId,
+            int deviceId)
         {
             await _commandLock.WaitAsync();
 
@@ -464,7 +471,8 @@ namespace MqttModbusGateway
                     triggerNm,
                     stepId,
                     batchId,
-                    userId);
+                    userId,
+                    deviceId);
 
                 string at037 = string.Format(CultureInfo.InvariantCulture, "AT037,{0:00.00},{1:00.00}", torqueHighNm, torqueLowNm);
                 await ExecuteRawInternalAsync(at037);
@@ -496,7 +504,8 @@ namespace MqttModbusGateway
             float triggerNm,
             int stepId,
             int batchId,
-            int userId)
+            int userId,
+            int deviceId)
         {
             _targetTorqueHighNm = torqueHighNm;
             _targetTorqueLowNm = torqueLowNm;
@@ -508,6 +517,7 @@ namespace MqttModbusGateway
             _currentStepId = stepId;
             _currentBatchId = batchId;
             _currentUserId = userId;
+            _currentDeviceId = deviceId;
         }
 
         private async Task ExecuteRawInternalAsync(string command)
