@@ -22,13 +22,17 @@ public class ServiceWorker : BackgroundService
 
         var computerName = Environment.MachineName;
         string thingName = $"{computerName}-bt";
-        string broker = "a36o17791e5o3h-ats.iot.eu-central-1.amazonaws.com";
+        //  string broker = "a36o17791e5o3h-ats.iot.eu-central-1.amazonaws.com";
+        string broker = "aecb2nvsmjqlh-ats.iot.eu-central-1.amazonaws.com";
 
         // Ustalenie ścieżki bazowej aplikacji (kluczowe dla prawidłowego działania certyfikatów na produkcji!)
         string baseDir = AppContext.BaseDirectory;
-        string certPath = Path.Combine(baseDir, "certs/certificate.pem.crt");
-        string keyPath = Path.Combine(baseDir, "certs/private.pem.key");
-        string caPath = Path.Combine(baseDir, "certs/AmazonRootCA1.pem");
+        //string certPath = Path.Combine(baseDir, "certs/certificate.pem.crt");
+        //string keyPath = Path.Combine(baseDir, "certs/private.pem.key");
+        //string caPath = Path.Combine(baseDir, "certs/AmazonRootCA1.pem");
+        string certPath = Path.Combine(baseDir, "certs", "1fa8573fd3c4a52a4a67ac68216f0312f72b617a06d3f02876c0a101b545c53b-certificate.pem.crt");
+        string keyPath = Path.Combine(baseDir, "certs", "1fa8573fd3c4a52a4a67ac68216f0312f72b617a06d3f02876c0a101b545c53b-private.pem.key");
+        string caPath = Path.Combine(baseDir, "certs", "AmazonRootCA1.pem");
 
         try
         {
