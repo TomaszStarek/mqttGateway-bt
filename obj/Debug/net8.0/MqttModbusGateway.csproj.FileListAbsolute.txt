@@ -1,9 +1,5 @@
 C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\MqttModbusGateway.exe
-C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\certs\85488670d8d0a3d3932da26e0ce51ba9ba1a0d7508777175cb78781a7494b42f-public.pem.key
 C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\certs\AmazonRootCA1.pem
-C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\certs\AmazonRootCA3.pem
-C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\certs\certificate.pem.crt
-C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\certs\private.pem.key
 C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\MqttModbusGateway.deps.json
 C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\MqttModbusGateway.runtimeconfig.json
 C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\MqttModbusGateway.dll
@@ -80,3 +76,7 @@ C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin
 C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\runtimes\win\lib\net8.0\System.Diagnostics.EventLog.dll
 C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\runtimes\win\lib\net8.0\System.ServiceProcess.ServiceController.dll
 C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\runtimes\browser\lib\net8.0\System.Text.Encodings.Web.dll
+C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\certs\1fa8573fd3c4a52a4a67ac68216f0312f72b617a06d3f02876c0a101b545c53b-private.pem.key
+C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\certs\1fa8573fd3c4a52a4a67ac68216f0312f72b617a06d3f02876c0a101b545c53b-public.pem.key
+C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\certs\AmazonRootCA3 1.pem
+C:\Users\2281209\source\ener\MqttModbusGateway - bluetooth\MqttModbusGateway\bin\Debug\net8.0\certs\1fa8573fd3c4a52a4a67ac68216f0312f72b617a06d3f02876c0a101b545c53b-certificate.pem.crt
