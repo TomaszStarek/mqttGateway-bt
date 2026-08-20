@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "xc1BLPDdspo=",
+  "dgSpecHash": "17cgg6mzFZk=",
   "success": true,
-  "projectFilePath": "C:\\Users\\2281209\\source\\ener\\MqttModbusGateway - bluetooth\\MqttModbusGateway\\MqttModbusGateway.csproj",
+  "projectFilePath": "C:\\Users\\2281209\\Source\\Repos\\mqttGateway-bt\\MqttModbusGateway.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\2281209\\.nuget\\packages\\microsoft.extensions.configuration\\10.0.9\\microsoft.extensions.configuration.10.0.9.nupkg.sha512",
     "C:\\Users\\2281209\\.nuget\\packages\\microsoft.extensions.configuration.abstractions\\10.0.9\\microsoft.extensions.configuration.abstractions.10.0.9.nupkg.sha512",

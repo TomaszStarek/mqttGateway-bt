@@ -25,6 +25,8 @@ namespace MqttModbusGateway
 
         private IMqttClient? _mqtt;
         private readonly Dictionary<string, DeviceWorker> _workers = new();
+        private readonly SemaphoreSlim _reconnectLock = new(1, 1);
+        private readonly CancellationTokenSource _cts = new();
 
         public Gateway(
             string thingName,
@@ -47,8 +49,7 @@ namespace MqttModbusGateway
         {
             await ConnectMqttAsync(ct);
 
-            _logger.LogInformation("Gateway running. Waiting for config message on " +
-                                  $"'{_thingName}/config'. Press Ctrl+C to exit.");
+            _logger.LogInformation($"Gateway running. Waiting for config on '{_thingName}/config'.");
 
             try
             {
@@ -65,28 +66,58 @@ namespace MqttModbusGateway
             _mqtt = new MqttClientFactory().CreateMqttClient();
             _mqtt.ApplicationMessageReceivedAsync += OnMessageAsync;
 
-            _mqtt.DisconnectedAsync += async _ =>
+            _mqtt.DisconnectedAsync += e =>
             {
-                _logger.LogInformation("MQTT: disconnected from AWS IoT — reconnecting in 5 s…");
-                await Task.Delay(5_000);
-
-                try
-                {
-                    await _mqtt.ConnectAsync(_mqtt.Options, CancellationToken.None);
-                    _logger.LogInformation("MQTT: reconnected ✓");
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogCritical($"MQTT: reconnect failed — {ex.Message}");
-                }
+                _logger.LogWarning($"MQTT: Disconnected ({e.Reason}). Retrying in background...");
+                _ = Task.Run(() => ReconnectLoopAsync(_cts.Token));
+                return Task.CompletedTask;
             };
 
             await TryMqttConnectAsync(ct);
+            await SubscribeTopicsAsync();
+        }
+
+        private async Task SubscribeTopicsAsync()
+        {
+            if (_mqtt is null || !_mqtt.IsConnected) return;
 
             await _mqtt.SubscribeAsync($"{_thingName}/config");
             await _mqtt.SubscribeAsync($"{_thingName}/+/commands");
+            _logger.LogInformation("MQTT: Subscriptions updated.");
+        }
 
-            _logger.LogInformation("MQTT: subscriptions active.");
+        private async Task ReconnectLoopAsync(CancellationToken ct)
+        {
+            if (!await _reconnectLock.WaitAsync(0)) return;
+
+            try
+            {
+                while (!ct.IsCancellationRequested && (_mqtt == null || !_mqtt.IsConnected))
+                {
+                    await Task.Delay(5_000, ct);
+
+                    try
+                    {
+                        _logger.LogInformation("MQTT: Reconnecting to AWS IoT...");
+                        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
+
+                        await _mqtt!.ConnectAsync(_mqtt.Options, linkedCts.Token);
+                        await SubscribeTopicsAsync();
+
+                        _logger.LogInformation("MQTT: Reconnected successfully ✓");
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError($"MQTT: Reconnect failed ({ex.Message}) — retrying in 5s...");
+                    }
+                }
+            }
+            finally
+            {
+                _reconnectLock.Release();
+            }
         }
 
         private async Task TryMqttConnectAsync(CancellationToken ct)
@@ -95,21 +126,19 @@ namespace MqttModbusGateway
             if (!File.Exists(_keyPath)) throw new FileNotFoundException($"Private key not found: {_keyPath}");
             if (!File.Exists(_caPath)) throw new FileNotFoundException($"Root CA not found: {_caPath}");
 
-            try
-            {
-                using var tempCert = X509Certificate2.CreateFromPemFile(_certPath, _keyPath);
-                var clientCert = new X509Certificate2(tempCert.Export(X509ContentType.Pkcs12));
-                var caCert = new X509Certificate2(_caPath);
+            using var tempCert = X509Certificate2.CreateFromPemFile(_certPath, _keyPath);
+            var clientCert = new X509Certificate2(tempCert.Export(X509ContentType.Pkcs12));
+            var caCert = new X509Certificate2(_caPath);
 
-                var options = new MqttClientOptionsBuilder()
-                    .WithTcpServer(_mqttBroker, 8883)
-                    .WithClientId(_thingName)
-                    .WithTimeout(TimeSpan.FromSeconds(30))
-                    .WithTlsOptions(o => o
-                        .UseTls()
-                        .WithSslProtocols(System.Security.Authentication.SslProtocols.Tls12)
-                        .WithClientCertificates(new X509Certificate2Collection(clientCert))
-                        .WithTrustChain(new X509Certificate2Collection(caCert))
+            var options = new MqttClientOptionsBuilder()
+                .WithTcpServer(_mqttBroker, 8883)
+                .WithClientId(_thingName)
+                .WithTimeout(TimeSpan.FromSeconds(30))
+                .WithTlsOptions(o => o
+                    .UseTls()
+                    .WithSslProtocols(System.Security.Authentication.SslProtocols.Tls12)
+                    .WithClientCertificates(new X509Certificate2Collection(clientCert))
+                    .WithTrustChain(new X509Certificate2Collection(caCert))
                     .WithCertificateValidationHandler(ctx =>
                     {
                         var cert2 = new X509Certificate2(ctx.Certificate);
@@ -118,100 +147,80 @@ namespace MqttModbusGateway
                         ctx.Chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
                         return ctx.Chain.Build(cert2);
                     }))
-                    .Build();
+                .Build();
 
-                _logger.LogInformation($"MQTT: connecting to {_mqttBroker}…");
-                await _mqtt!.ConnectAsync(options, ct);
-                _logger.LogInformation("MQTT: connected");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogCritical($"MQTT: connection error — {ex.Message}");
-                throw;
-            }
+            _logger.LogInformation($"MQTT: Connecting to {_mqttBroker}…");
+            await _mqtt!.ConnectAsync(options, ct);
+            _logger.LogInformation("MQTT: Connected");
         }
 
         private async Task OnMessageAsync(MqttApplicationMessageReceivedEventArgs args)
         {
+            string topic = args.ApplicationMessage.Topic;
+            string payload = args.ApplicationMessage.ConvertPayloadToString();
+
+            _logger.LogInformation($"[MQTT IN] {topic} -> {payload}");
+
             try
             {
-                string topic = args.ApplicationMessage.Topic;
-                string payload = args.ApplicationMessage.ConvertPayloadToString();
-
-                _logger.LogInformation(new string('-', 50));
-                _logger.LogInformation($"[MQTT IN] {DateTime.Now:HH:mm:ss}  {topic}");
-                _logger.LogInformation($"Payload : {payload}");
-                _logger.LogInformation(new string('-', 50));
-
                 if (topic == $"{_thingName}/config")
                 {
                     await HandleConfigMessageAsync(payload);
-                    return;
                 }
-
-                if (topic.StartsWith(_thingName) && topic.EndsWith("/commands"))
+                else if (topic.StartsWith(_thingName) && topic.EndsWith("/commands"))
                 {
                     await HandleCommandMessageAsync(topic, payload);
-                    return;
                 }
-
-                _logger.LogInformation($"[MQTT] Unhandled topic: {topic}");
             }
             catch (Exception ex)
             {
-                _logger.LogCritical($"[MQTT] Message handler error: {ex.Message}");
+                _logger.LogError($"[MQTT] Error processing topic '{topic}': {ex.Message}");
             }
         }
 
         private async Task HandleConfigMessageAsync(string json)
         {
-            ConfigRoot? config;
+            ConfigRoot? config = null;
             try
             {
-                config = JsonSerializer.Deserialize<ConfigRoot>(json,
-                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                config = JsonSerializer.Deserialize<ConfigRoot>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             }
-            catch (Exception ex)
+            catch (JsonException ex)
             {
-                _logger.LogInformation($"[Config] JSON parse error: {ex.Message}");
+                _logger.LogWarning($"[Config] Invalid JSON payload: {ex.Message}");
                 return;
             }
 
-            if (config is null || config.Devices.Count == 0)
+            if (config is null || !config.IsActive || config.Devices.Count == 0)
             {
-                _logger.LogInformation("[Config] Received empty or invalid configuration — ignoring.");
-                return;
-            }
-
-            if (!config.IsActive)
-            {
-                _logger.LogInformation("[Config] isActive=false — stopping all device workers.");
+                _logger.LogInformation("[Config] Empty or inactive configuration — stopping all workers.");
 
                 foreach (var key in _workers.Keys.ToList())
                 {
-                    await _workers[key].StopAsync();
-                    _workers[key].Dispose();
-                    _workers.Remove(key);
-                    _logger.LogInformation($"[Config] Stopped worker for {key}");
+                    await StopAndRemoveWorkerAsync(key);
                 }
-
                 return;
             }
 
+            var newDeviceIds = config.Devices.Select(d => d.DeviceId).ToHashSet();
+
+            // Usunięcie wycofanych wkrętaków
+            foreach (var key in _workers.Keys.ToList())
+            {
+                if (!newDeviceIds.Contains(key))
+                {
+                    await StopAndRemoveWorkerAsync(key);
+                }
+            }
+
+            // Start / podmiana wkrętaków z nowej konfiguracji
             foreach (DeviceConfig deviceCfg in config.Devices)
             {
-                if (string.IsNullOrWhiteSpace(deviceCfg.Address))
-                {
-                    _logger.LogInformation($"[Config] Skipping device Id={deviceCfg.Id} — missing Address.");
-                    continue;
-                }
+                if (string.IsNullOrWhiteSpace(deviceCfg.Address)) continue;
 
-                if (_workers.TryGetValue(deviceCfg.DeviceId, out DeviceWorker? existing))
+                if (_workers.ContainsKey(deviceCfg.DeviceId))
                 {
-                    _logger.LogInformation($"[Config] Replacing existing worker for {deviceCfg.DeviceId}…");
-                    await existing.StopAsync();
-                    existing.Dispose();
-                    _workers.Remove(deviceCfg.DeviceId);
+                    await StopAndRemoveWorkerAsync(deviceCfg.DeviceId);
                 }
 
                 var workerLogger = _loggerFactory.CreateLogger<DeviceWorker>();
@@ -219,22 +228,25 @@ namespace MqttModbusGateway
                 _workers[deviceCfg.DeviceId] = worker;
                 worker.Start();
 
-                _logger.LogInformation(
-                    $"[Config] Worker started — DeviceId={deviceCfg.DeviceId}, " +
-                    $"Port={deviceCfg.Address}, Baud={deviceCfg.BaudRate}");
+                _logger.LogInformation($"[Config] Worker started: {deviceCfg.DeviceId} ({deviceCfg.Address})");
             }
+        }
 
-            _logger.LogInformation($"[Config] Active workers: {_workers.Count}");
+        private async Task StopAndRemoveWorkerAsync(string deviceId)
+        {
+            if (_workers.TryGetValue(deviceId, out var worker))
+            {
+                await worker.StopAsync();
+                worker.Dispose();
+                _workers.Remove(deviceId);
+                _logger.LogInformation($"[Config] Stopped worker: {deviceId}");
+            }
         }
 
         private async Task HandleCommandMessageAsync(string topic, string json)
         {
             string[] parts = topic.Split('/');
-            if (parts.Length != 3)
-            {
-                _logger.LogCritical($"[CMD] Unexpected topic format: {topic}");
-                return;
-            }
+            if (parts.Length != 3) return;
 
             string address = parts[1];
 
@@ -243,21 +255,18 @@ namespace MqttModbusGateway
 
             if (worker is null)
             {
-                _logger.LogInformation($"[CMD] No active worker for address '{address}'.");
+                _logger.LogWarning($"[CMD] No worker found for address '{address}'.");
                 return;
             }
 
-            Command? cmd;
+            Command? cmd = null;
             try
             {
-                cmd = JsonSerializer.Deserialize<Command>(json, new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                });
+                cmd = JsonSerializer.Deserialize<Command>(json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
             }
-            catch (Exception ex)
+            catch (JsonException ex)
             {
-                _logger.LogCritical($"[CMD] JSON parse error: {ex.Message}");
+                _logger.LogWarning($"[CMD] Invalid command JSON: {ex.Message}");
                 return;
             }
 
@@ -294,14 +303,14 @@ namespace MqttModbusGateway
 
         public async ValueTask DisposeAsync()
         {
+            _cts.Cancel();
             _logger.LogInformation("Stopping gateway…");
 
-            await Task.WhenAll(_workers.Values.Select(async w =>
+            foreach (var worker in _workers.Values)
             {
-                await w.StopAsync();
-                w.Dispose();
-            }));
-
+                await worker.StopAsync();
+                worker.Dispose();
+            }
             _workers.Clear();
 
             if (_mqtt is not null)
@@ -312,6 +321,8 @@ namespace MqttModbusGateway
                 _mqtt.Dispose();
             }
 
+            _cts.Dispose();
+            _reconnectLock.Dispose();
             _logger.LogInformation("Gateway stopped.");
         }
     }

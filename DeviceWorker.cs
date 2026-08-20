@@ -126,6 +126,7 @@ namespace MqttModbusGateway
         private async Task TryOpenPortAsync(CancellationToken ct)
         {
             ClosePort();
+            await Task.Delay(300, ct);
             try
             {
                 _port = new SerialPort(_cfg.Address, _cfg.BaudRate)
@@ -164,12 +165,12 @@ namespace MqttModbusGateway
 
         private async Task ReadLinesAsync(CancellationToken ct)
         {
-            using var reader = new StreamReader(_port!.BaseStream, Encoding.ASCII,
-                                                 detectEncodingFromByteOrderMarks: false,
-                                                 leaveOpen: true);
             try
             {
-                while (!ct.IsCancellationRequested && _port.IsOpen)
+                // Tworzymy StreamReader bez leaveOpen, żeby przy jego błędzie nie blokiwać portu
+                using var reader = new StreamReader(_port!.BaseStream, Encoding.ASCII);
+
+                while (!ct.IsCancellationRequested && _port is not null && _port.IsOpen)
                 {
                     string? line = await reader.ReadLineAsync(ct);
 
@@ -183,8 +184,9 @@ namespace MqttModbusGateway
             }
             catch (Exception ex)
             {
-                _logger.LogInformation($"[{_cfg.DeviceId}] Read error: {ex.Message}");
-                await HandleDisconnectAsync(ct);
+                _logger.LogWarning($"[{_cfg.DeviceId}] Read error/disconnect: {ex.Message}");
+                // Nie wywołuj bezpośrednio HandleDisconnectAsync z poziomu czytnika, 
+                // niech pętla główna (ReadLoopAsync) wykryje brak połączenia i obsłuży restart.
             }
         }
 
@@ -284,7 +286,15 @@ namespace MqttModbusGateway
 
         private void ClosePort()
         {
-            try { _port?.Close(); } catch { }
+            try
+            {
+                if (_port is not null && _port.IsOpen)
+                {
+                    _port.Close();
+                }
+            }
+            catch { }
+
             try { _port?.Dispose(); } catch { }
             _port = null;
         }
@@ -476,11 +486,11 @@ namespace MqttModbusGateway
 
                 string at037 = string.Format(CultureInfo.InvariantCulture, "AT037,{0:00.00},{1:00.00}", torqueHighNm, torqueLowNm);
                 await ExecuteRawInternalAsync(at037);
-                await Task.Delay(200);
-
+                await Task.Delay(500);
+                //musi być pomiar angle wlaczony!!! inaczej errory
                 string at045 = string.Format(CultureInfo.InvariantCulture, "AT045,{0:00.00}", triggerNm);
                 await ExecuteRawInternalAsync(at045);
-                await Task.Delay(200);
+                await Task.Delay(500);
 
                 string at046 = string.Format(CultureInfo.InvariantCulture, "AT046,{0:000},{1:000},{2:000}", doubleDetectionAngleDeg, angleLowDeg, angleHighDeg);
                 await ExecuteRawInternalAsync(at046);
