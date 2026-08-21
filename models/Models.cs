@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 namespace MqttModbusGateway
 {
@@ -24,7 +25,21 @@ namespace MqttModbusGateway
         string? SerialNumber = null
     )
     {
-        public string Address => IpAddress;
+        public string Address
+        {
+            get
+            {
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    return IpAddress.StartsWith("/dev/") ? IpAddress : $"/dev/{IpAddress}";
+                }
+
+                return IpAddress.Replace("/dev/", "").Trim();
+            }
+        }
+
+        public string CleanAddress => IpAddress.Replace("/dev/", "").Trim();
+
         public string DeviceId => $"DEVICE-{Id}";
     }
 

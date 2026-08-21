@@ -18,9 +18,10 @@ public class ServiceWorker : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        _logger.LogInformation("Starting the MQTT - Modbus gateway service...");
+        _logger.LogInformation("Starting the MQTT - Modbus gateway service... new ver");
 
         var computerName = Environment.MachineName;
+     //   computerName = "plkwim0rpi250";
         string thingName = $"{computerName}-bt";
         //  string broker = "a36o17791e5o3h-ats.iot.eu-central-1.amazonaws.com";
         string broker = "aecb2nvsmjqlh-ats.iot.eu-central-1.amazonaws.com";
