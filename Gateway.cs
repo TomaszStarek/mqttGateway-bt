@@ -202,12 +202,16 @@ namespace MqttModbusGateway
                 return;
             }
 
-            var newDeviceIds = config.Devices.Select(d => d.DeviceId).ToHashSet();
+            // Zbieramy aktualne czyste nazwy portów (np. "COM1", "COM2")
+            var newDeviceAddresses = config.Devices
+                .Where(d => !string.IsNullOrWhiteSpace(d.Address))
+                .Select(d => d.CleanAddress.ToUpperInvariant())
+                .ToHashSet();
 
-            // Usunięcie wycofanych wkrętaków
+            // Usunięcie wycofanych wkrętaków (po kluczu portu)
             foreach (var key in _workers.Keys.ToList())
             {
-                if (!newDeviceIds.Contains(key))
+                if (!newDeviceAddresses.Contains(key))
                 {
                     await StopAndRemoveWorkerAsync(key);
                 }
@@ -218,28 +222,32 @@ namespace MqttModbusGateway
             {
                 if (string.IsNullOrWhiteSpace(deviceCfg.Address)) continue;
 
-                if (_workers.ContainsKey(deviceCfg.DeviceId))
+                string key = deviceCfg.CleanAddress.ToUpperInvariant(); // np. "COM2"
+
+                if (_workers.ContainsKey(key))
                 {
-                    await StopAndRemoveWorkerAsync(deviceCfg.DeviceId);
+                    await StopAndRemoveWorkerAsync(key);
                 }
 
                 var workerLogger = _loggerFactory.CreateLogger<DeviceWorker>();
                 var worker = new DeviceWorker(deviceCfg, _thingName, _mqtt!, workerLogger);
-                _workers[deviceCfg.DeviceId] = worker;
+
+                // Rejestrujemy w słowniku pod kluczem portu (np. "COM2")
+                _workers[key] = worker;
                 worker.Start();
 
-                _logger.LogInformation($"[Config] Worker started: {deviceCfg.DeviceId} ({deviceCfg.Address})");
+                _logger.LogInformation($"[Config] Worker started: {deviceCfg.DeviceId} na porcie {key}");
             }
         }
 
-        private async Task StopAndRemoveWorkerAsync(string deviceId)
+        private async Task StopAndRemoveWorkerAsync(string key)
         {
-            if (_workers.TryGetValue(deviceId, out var worker))
+            if (_workers.TryGetValue(key, out var worker))
             {
                 await worker.StopAsync();
                 worker.Dispose();
-                _workers.Remove(deviceId);
-                _logger.LogInformation($"[Config] Stopped worker: {deviceId}");
+                _workers.Remove(key);
+                _logger.LogInformation($"[Config] Stopped worker na porcie: {key}");
             }
         }
 
@@ -248,14 +256,13 @@ namespace MqttModbusGateway
             string[] parts = topic.Split('/');
             if (parts.Length != 3) return;
 
-            string address = parts[1];
+            string address = parts[1].Trim().ToUpperInvariant(); // np. "COM2"
 
-            DeviceWorker? worker = _workers.Values.FirstOrDefault(w =>
-                string.Equals(w.Address, address, StringComparison.OrdinalIgnoreCase));
-
-            if (worker is null)
+            // Pobieramy ze słownika po czystym kluczu portu
+            if (!_workers.TryGetValue(address, out var worker) || worker is null)
             {
-                _logger.LogWarning($"[CMD] No worker found for address '{address}'.");
+                string available = string.Join(", ", _workers.Keys);
+                _logger.LogWarning($"[CMD] No worker found for address '{address}'. Active ports: [{available}]");
                 return;
             }
 

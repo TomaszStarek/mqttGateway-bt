@@ -48,7 +48,6 @@ namespace MqttModbusGateway
         private int _currentUserId;
         private int _currentDeviceId;
 
-
         public DeviceWorker(DeviceConfig cfg, string thingName, IMqttClient mqtt, ILogger<DeviceWorker> logger)
         {
             _cfg = cfg;
@@ -59,6 +58,7 @@ namespace MqttModbusGateway
 
         public string Address => _cfg.Address;
         public string DeviceId => _cfg.DeviceId;
+        public string CleanAddress => _cfg.CleanAddress;
 
         public void Start()
         {
@@ -147,13 +147,13 @@ namespace MqttModbusGateway
 
                 _readTask = Task.Run(() => ReadLinesAsync(ct), ct);
 
-                _logger.LogInformation($"[{_cfg.DeviceId}] Port {_cfg.Address} opened.");
+                _logger.LogInformation($"[{_cfg.DeviceId}] Port {_cfg.CleanAddress} opened.");
             }
             catch (Exception ex)
             {
                 if (_connected || !_initialStateSent)
                 {
-                    _logger.LogInformation($"[{_cfg.DeviceId}] Cannot open {_cfg.Address}: {ex.Message}");
+                    _logger.LogInformation($"[{_cfg.DeviceId}] Cannot open {_cfg.CleanAddress}: {ex.Message}");
                     _connected = false;
                     _initialStateSent = true;
                     await PublishStateAsync(connected: false, _cts.Token, disconnectReason: ex.Message);
@@ -167,7 +167,6 @@ namespace MqttModbusGateway
         {
             try
             {
-                // Tworzymy StreamReader bez leaveOpen, żeby przy jego błędzie nie blokiwać portu
                 using var reader = new StreamReader(_port!.BaseStream, Encoding.ASCII);
 
                 while (!ct.IsCancellationRequested && _port is not null && _port.IsOpen)
@@ -185,8 +184,6 @@ namespace MqttModbusGateway
             catch (Exception ex)
             {
                 _logger.LogWarning($"[{_cfg.DeviceId}] Read error/disconnect: {ex.Message}");
-                // Nie wywołuj bezpośrednio HandleDisconnectAsync z poziomu czytnika, 
-                // niech pętla główna (ReadLoopAsync) wykryje brak połączenia i obsłuży restart.
             }
         }
 
@@ -231,7 +228,7 @@ namespace MqttModbusGateway
                         TargetTorqueLowNm: ev.TargetTorqueLowNm,
                         TargetTorqueHighNm: ev.TargetTorqueHighNm,
                         TotalAngleDeg: ev.TotalAngleDeg,
-                        IsLoosening: true,
+                        IsLoosening: !ev.IsLoosening, // Poprawiono z sztywnej wartości true
                         Result: ev.Result,
                         TargetSpeedRpm: 0,
                         FasteningTimeMs: 0,
@@ -240,7 +237,8 @@ namespace MqttModbusGateway
                         SnugTorqueAngle: 0
                     );
 
-                    await PublishJsonAsync($"{_thingName}/{_cfg.Address}/data", res, _cts.Token);
+                    // POPRAWIONO LINIKĘ PONIŻEJ (dodano cudzysłów i nawias klamrowy)
+                    await PublishJsonAsync($"{_thingName}/{_cfg.CleanAddress}/data", res, _cts.Token);
 
                     _logger.LogInformation(
                         $"[{_cfg.DeviceId}] Event #{ev.EventCount} — " +
@@ -344,7 +342,7 @@ namespace MqttModbusGateway
 
             string judgment = fields[6].Trim().ToUpperInvariant();
             bool torqueOk = judgment[0] == 'O';
-            bool angleOk = true;//judgment[1] == 'O';
+            bool angleOk = true;
             bool resultOk = torqueOk && angleOk;
 
             string frameSerial = fields[7].Trim();
@@ -434,7 +432,7 @@ namespace MqttModbusGateway
                 disconnectReason = connected ? null : (disconnectReason ?? "unknown"),
             };
 
-            await PublishJsonAsync($"{_thingName}/{_cfg.Address}/state", payload, ct);
+            await PublishJsonAsync($"{_thingName}/{_cfg.CleanAddress}/state", payload, ct);
         }
 
         private async Task PublishJsonAsync<T>(string topic, T payload, CancellationToken ct)
@@ -487,13 +485,14 @@ namespace MqttModbusGateway
                 string at037 = string.Format(CultureInfo.InvariantCulture, "AT037,{0:00.00},{1:00.00}", torqueHighNm, torqueLowNm);
                 await ExecuteRawInternalAsync(at037);
                 await Task.Delay(500);
-                //musi być pomiar angle wlaczony!!! inaczej errory
-                string at045 = string.Format(CultureInfo.InvariantCulture, "AT045,{0:00.00}", triggerNm);
-                await ExecuteRawInternalAsync(at045);
-                await Task.Delay(500);
 
-                string at046 = string.Format(CultureInfo.InvariantCulture, "AT046,{0:000},{1:000},{2:000}", doubleDetectionAngleDeg, angleLowDeg, angleHighDeg);
-                await ExecuteRawInternalAsync(at046);
+                ///angle turned off for now, because they dont use angle
+                //string at045 = string.Format(CultureInfo.InvariantCulture, "AT045,{0:00.00}", triggerNm);
+                //await ExecuteRawInternalAsync(at045);
+                //await Task.Delay(500);
+
+                //string at046 = string.Format(CultureInfo.InvariantCulture, "AT046,{0:000},{1:000},{2:000}", doubleDetectionAngleDeg, angleLowDeg, angleHighDeg);
+                //await ExecuteRawInternalAsync(at046);
 
                 _logger.LogInformation(
                     $"[{_cfg.DeviceId}] Job configured — StepId={stepId}, BatchId={batchId}, UserId={userId}, " +
@@ -565,6 +564,7 @@ namespace MqttModbusGateway
             _cts.Cancel();
             ClosePort();
             _cts.Dispose();
+            _commandLock.Dispose();
         }
     }
 }
