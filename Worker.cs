@@ -24,7 +24,7 @@ public class ServiceWorker : BackgroundService
         var thingName = $"{computerName}-bt";
 
         // Zmień tylko tę wartość: "dev", "stg" albo "prd".
-        const string selectedEnvironment = "stg";
+        const string selectedEnvironment = "prd";
 
         var (broker, certificateFile, privateKeyFile, caFile) =
             selectedEnvironment switch
