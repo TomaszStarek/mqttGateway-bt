@@ -228,7 +228,7 @@ namespace MqttModbusGateway
                         TargetTorqueLowNm: ev.TargetTorqueLowNm,
                         TargetTorqueHighNm: ev.TargetTorqueHighNm,
                         TotalAngleDeg: ev.TotalAngleDeg,
-                        IsLoosening: !ev.IsLoosening, // Poprawiono z sztywnej wartości true
+                        IsLoosening: ev.IsLoosening, // Poprawiono z sztywnej wartości true
                         Result: ev.Result,
                         TargetSpeedRpm: 0,
                         FasteningTimeMs: 0,
