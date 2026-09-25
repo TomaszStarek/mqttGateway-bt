@@ -49,8 +49,9 @@ namespace MqttModbusGateway
         int DeviceId,
         int UserId,
         double TargetTorqueNm,
-        double TorqueMinPercentage,
-        double TorqueMaxPercentage,
+        double TorqueMin,
+        double TorqueMax,
+        int Tolerance,
         int MinAngleDeg,
         int RotationStartThresholdPercentage
     );
@@ -118,8 +119,9 @@ namespace MqttModbusGateway
         public string? Type { get; set; }
         public string? AtCommand { get; set; }
         public float TargetTorqueNm { get; set; }
-        public float TorqueMinPercentage { get; set; }
-        public float TorqueMaxPercentage { get; set; }
+        public float TorqueMin { get; set; }
+        public float TorqueMax { get; set; }
+        public int Tolerance { get; set; }
         public int MinAngleDeg { get; set; }
         public float RotationStartThresholdPercentage { get; set; }
         public int StepId { get; set; }

@@ -288,8 +288,9 @@ namespace MqttModbusGateway
                 return;
             }
 
-            float torqueLowNm = cmd.TargetTorqueNm * 90 / 100f;
-            float torqueHighNm = cmd.TargetTorqueNm * 120 / 100f;
+            float torqueLowNm = cmd.TargetTorqueNm * (100 - cmd.Tolerance) / 100f;
+            float torqueHighNm = cmd.TargetTorqueNm * (100 + cmd.Tolerance) / 100f;
+
             int angleLowDeg = cmd.MinAngleDeg;
             int angleHighDeg = UnboundedAngleHighDeg;
             int doubleDetectionAngleDeg = 0;
