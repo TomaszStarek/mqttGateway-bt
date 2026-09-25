@@ -157,3 +157,18 @@ C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\MqttModbusGateway.
 C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\MqttModbusGateway.pdb
 C:\Users\2281209\source\repos\mqttGateway-bt\obj\Debug\net8.0\MqttModbusGateway.genruntimeconfig.cache
 C:\Users\2281209\source\repos\mqttGateway-bt\obj\Debug\net8.0\ref\MqttModbusGateway.dll
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\dev\85488670d8d0a3d3932da26e0ce51ba9ba1a0d7508777175cb78781a7494b42f-public.pem.key
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\dev\AmazonRootCA1.pem
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\dev\AmazonRootCA3.pem
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\dev\certificate.pem.crt
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\dev\private.pem.key
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\prd\991249704daaaea6a53af320a7fed35494e052766f7892a88c195cbf22a9ad18-certificate.pem.crt
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\prd\991249704daaaea6a53af320a7fed35494e052766f7892a88c195cbf22a9ad18-private.pem.key
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\prd\991249704daaaea6a53af320a7fed35494e052766f7892a88c195cbf22a9ad18-public.pem.key
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\prd\AmazonRootCA1.pem
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\prd\AmazonRootCA3.pem
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\stg\1fa8573fd3c4a52a4a67ac68216f0312f72b617a06d3f02876c0a101b545c53b-certificate.pem.crt
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\stg\1fa8573fd3c4a52a4a67ac68216f0312f72b617a06d3f02876c0a101b545c53b-private.pem.key
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\stg\1fa8573fd3c4a52a4a67ac68216f0312f72b617a06d3f02876c0a101b545c53b-public.pem.key
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\stg\AmazonRootCA1.pem
+C:\Users\2281209\source\repos\mqttGateway-bt\bin\Debug\net8.0\certs\stg\AmazonRootCA3 1.pem
