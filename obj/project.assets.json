@@ -4111,23 +4111,23 @@
     ]
   },
   "packageFolders": {
-    "C:\\Users\\2281209\\.nuget\\packages\\": {},
+    "C:\\Users\\szulena1\\.nuget\\packages\\": {},
     "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages": {}
   },
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\Users\\2281209\\source\\repos\\mqttGateway-bt\\MqttModbusGateway.csproj",
+      "projectUniqueName": "C:\\Users\\szulena1\\Source\\Repos\\mqttGateway-bt\\MqttModbusGateway.csproj",
       "projectName": "MqttModbusGateway",
-      "projectPath": "C:\\Users\\2281209\\source\\repos\\mqttGateway-bt\\MqttModbusGateway.csproj",
-      "packagesPath": "C:\\Users\\2281209\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\2281209\\source\\repos\\mqttGateway-bt\\obj\\",
+      "projectPath": "C:\\Users\\szulena1\\Source\\Repos\\mqttGateway-bt\\MqttModbusGateway.csproj",
+      "packagesPath": "C:\\Users\\szulena1\\.nuget\\packages\\",
+      "outputPath": "C:\\Users\\szulena1\\Source\\Repos\\mqttGateway-bt\\obj\\",
       "projectStyle": "PackageReference",
       "fallbackFolders": [
         "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
       ],
       "configFilePaths": [
-        "C:\\Users\\2281209\\AppData\\Roaming\\NuGet\\NuGet.Config",
+        "C:\\Users\\szulena1\\AppData\\Roaming\\NuGet\\NuGet.Config",
         "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
         "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
       ],

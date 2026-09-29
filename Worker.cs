@@ -20,11 +20,18 @@ public class ServiceWorker : BackgroundService
     {
         _logger.LogInformation("Starting the MQTT - Modbus gateway service... new ver");
 
+        // Rejestrujemy automatyczne akceptowanie parowania Bluetooth NAJPIERW, zanim
+        // gateway zacznie probowac otwierac porty COM - dzieki temu kazde zadanie
+        // parowania/ponownego polaczenia (takze po zablokowaniu ekranu / zmianie
+        // zalogowanego operatora) zostanie zaakceptowane automatycznie, bez okienka.
+        using var bluetoothAutoAcceptor = new BluetoothAutoAcceptor(_logger);
+        bluetoothAutoAcceptor.Start();
+
         var computerName = Environment.MachineName;
         var thingName = $"{computerName}-bt";
 
         // Zmień tylko tę wartość: "dev", "stg" albo "prd".
-        const string selectedEnvironment = "prd";
+        const string selectedEnvironment = "stg";
 
         var (broker, certificateFile, privateKeyFile, caFile) =
             selectedEnvironment switch
