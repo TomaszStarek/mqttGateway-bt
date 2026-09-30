@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "QGFniAgj31c=",
+  "dgSpecHash": "ewSZvwa5Kig=",
   "success": true,
   "projectFilePath": "C:\\Users\\szulena1\\Source\\Repos\\mqttGateway-bt\\MqttModbusGateway.csproj",
   "expectedPackageFiles": [
@@ -54,11 +54,13 @@
     "C:\\Users\\szulena1\\.nuget\\packages\\runtime.native.system.io.ports\\10.0.8\\runtime.native.system.io.ports.10.0.8.nupkg.sha512",
     "C:\\Users\\szulena1\\.nuget\\packages\\runtime.osx-arm64.runtime.native.system.io.ports\\10.0.8\\runtime.osx-arm64.runtime.native.system.io.ports.10.0.8.nupkg.sha512",
     "C:\\Users\\szulena1\\.nuget\\packages\\runtime.osx-x64.runtime.native.system.io.ports\\10.0.8\\runtime.osx-x64.runtime.native.system.io.ports.10.0.8.nupkg.sha512",
+    "C:\\Users\\szulena1\\.nuget\\packages\\system.codedom\\8.0.0\\system.codedom.8.0.0.nupkg.sha512",
     "C:\\Users\\szulena1\\.nuget\\packages\\system.diagnostics.diagnosticsource\\10.0.9\\system.diagnostics.diagnosticsource.10.0.9.nupkg.sha512",
     "C:\\Users\\szulena1\\.nuget\\packages\\system.diagnostics.eventlog\\10.0.9\\system.diagnostics.eventlog.10.0.9.nupkg.sha512",
     "C:\\Users\\szulena1\\.nuget\\packages\\system.io\\4.3.0\\system.io.4.3.0.nupkg.sha512",
     "C:\\Users\\szulena1\\.nuget\\packages\\system.io.pipelines\\10.0.9\\system.io.pipelines.10.0.9.nupkg.sha512",
     "C:\\Users\\szulena1\\.nuget\\packages\\system.io.ports\\10.0.8\\system.io.ports.10.0.8.nupkg.sha512",
+    "C:\\Users\\szulena1\\.nuget\\packages\\system.management\\8.0.0\\system.management.8.0.0.nupkg.sha512",
     "C:\\Users\\szulena1\\.nuget\\packages\\system.runtime\\4.3.0\\system.runtime.4.3.0.nupkg.sha512",
     "C:\\Users\\szulena1\\.nuget\\packages\\system.serviceprocess.servicecontroller\\10.0.9\\system.serviceprocess.servicecontroller.10.0.9.nupkg.sha512",
     "C:\\Users\\szulena1\\.nuget\\packages\\system.text.encoding\\4.3.0\\system.text.encoding.4.3.0.nupkg.sha512",
