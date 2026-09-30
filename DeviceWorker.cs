@@ -28,6 +28,7 @@ namespace MqttModbusGateway
         private bool _connected;
 
         private DateTime _lastResponseUtc = DateTime.MinValue;
+        private DateTime _lastOpenFailLogUtc = DateTime.MinValue;
 
         private float _targetTorqueHighNm;
         private float _targetTorqueLowNm;
@@ -151,9 +152,25 @@ namespace MqttModbusGateway
             }
             catch (Exception ex)
             {
-                if (_connected || !_initialStateSent)
+                // UWAGA: poprzednio warunek logowania byl identyczny z warunkiem
+                // "czy to jest zmiana stanu" (_connected || !_initialStateSent).
+                // Po PIERWSZEJ nieudanej probie _initialStateSent ustawiane bylo na
+                // true, wiec KAZDA kolejna nieudana proba przestawala byc logowana -
+                // usluga w tle nadal probowala otwierac port co ok. 1,3s w kolko,
+                // ale w logu wygladalo to tak, jakby sie poddala. Teraz logujemy
+                // pierwsza probe zawsze, a kolejne co najmniej co 30s, zeby bylo
+                // widac, ze worker ciagle probuje sie polaczyc (i dlaczego sie nie udaje).
+                bool isStateChange = _connected || !_initialStateSent;
+                bool shouldLog = isStateChange || (DateTime.UtcNow - _lastOpenFailLogUtc > TimeSpan.FromSeconds(30));
+
+                if (shouldLog)
                 {
-                    _logger.LogInformation($"[{_cfg.DeviceId}] Cannot open {_cfg.CleanAddress}: {ex.Message}");
+                    _logger.LogInformation($"[{_cfg.DeviceId}] Cannot open {_cfg.CleanAddress}: {ex.Message} (ciagle probuje ponownie...)");
+                    _lastOpenFailLogUtc = DateTime.UtcNow;
+                }
+
+                if (isStateChange)
+                {
                     _connected = false;
                     _initialStateSent = true;
                     await PublishStateAsync(connected: false, _cts.Token, disconnectReason: ex.Message);
