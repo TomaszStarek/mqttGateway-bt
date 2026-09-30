@@ -125,26 +125,57 @@ namespace MqttModbusGateway
         }
 
         private Task? _readTask;
+        private const int OpenTimeoutMs = 8_000;
 
         private async Task TryOpenPortAsync(CancellationToken ct)
         {
             ClosePort();
             await Task.Delay(300, ct);
+
+            // Uzywamy zmiennej lokalnej (nie od razu pola _port), zeby jesli Open()
+            // sie zawiesi i porzucimy te probe, nie kolidowac z kolejna probka,
+            // ktora dostanie swoj wlasny, nowy obiekt SerialPort.
+            var candidatePort = new SerialPort(_cfg.Address, _cfg.BaudRate)
+            {
+                DataBits = 8,
+                Parity = Parity.None,
+                StopBits = StopBits.One,
+                Handshake = Handshake.RequestToSend,
+                Encoding = Encoding.ASCII,
+                NewLine = "\r\n",
+                ReadTimeout = SerialReadTimeoutMs
+            };
+
             try
             {
-                _port = new SerialPort(_cfg.Address, _cfg.BaudRate)
+                // SerialPort.Open() jest synchroniczne i NIE reaguje na CancellationToken -
+                // jesli sterownik/stos Bluetooth SPP sie zawiesi (znany problem tuz po wlaczeniu
+                // urzadzenia, gdy trwa jeszcze negocjacja polaczenia), to wywolanie potrafi
+                // zablokowac sie na zawsze, zamrazajac cala petle ponawiania. Dlatego pilnujemy
+                // twardego limitu czasu i porzucamy proby, ktore go przekrocza.
+                var openTask = Task.Run(() => candidatePort.Open());
+                var winner = await Task.WhenAny(openTask, Task.Delay(OpenTimeoutMs, ct));
+
+                if (winner != openTask)
                 {
-                    DataBits = 8,
-                    Parity = Parity.None,
-                    StopBits = StopBits.One,
-                    Handshake = Handshake.RequestToSend,
-                    Encoding = Encoding.ASCII,
-                    NewLine = "\r\n",
-                    ReadTimeout = SerialReadTimeoutMs
-                };
+                    _logger.LogWarning(
+                        $"[{_cfg.DeviceId}] Otwieranie portu {_cfg.CleanAddress} nie odpowiedzialo przez {OpenTimeoutMs} ms " +
+                        "(zawieszone Open() - typowe tuz po wlaczeniu klucza) - porzucam te probe i probuje dalej.");
 
-                await Task.Run(() => _port.Open(), ct);
+                    // Jesli Open() kiedys jednak wroci (sukcesem lub bledem), sprzatamy po nim
+                    // w tle, zeby nie trzymac zawieszonego uchwytu w nieskonczonosc.
+                    _ = openTask.ContinueWith(_ =>
+                    {
+                        try { if (candidatePort.IsOpen) candidatePort.Close(); } catch { }
+                        try { candidatePort.Dispose(); } catch { }
+                    }, TaskScheduler.Default);
 
+                    throw new TimeoutException($"Timeout otwierania portu {_cfg.CleanAddress} ({OpenTimeoutMs} ms).");
+                }
+
+                await openTask; // jesli Open() rzucilo wyjatek (bez zawieszenia), przekaz go do catch ponizej
+
+                _port = candidatePort;
                 _initialStateSent = true;
                 await PublishStateAsync(connected: true, ct);
 
@@ -154,6 +185,11 @@ namespace MqttModbusGateway
             }
             catch (Exception ex)
             {
+                if (!ReferenceEquals(_port, candidatePort))
+                {
+                    try { candidatePort.Dispose(); } catch { }
+                }
+
                 // UWAGA: poprzednio warunek logowania byl identyczny z warunkiem
                 // "czy to jest zmiana stanu" (_connected || !_initialStateSent).
                 // Po PIERWSZEJ nieudanej probie _initialStateSent ustawiane bylo na
