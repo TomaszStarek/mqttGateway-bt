@@ -15,8 +15,10 @@ namespace MqttModbusGateway
     internal sealed class DeviceWorker : IDisposable
     {
         private const int Df3FieldCount = 9;
-        private const int ReconnectDelayMs = 5_000;
+        private const int ReconnectDelayMs = 2_000;
         private const int SerialReadTimeoutMs = 10_000;
+        private const int SerialWriteTimeoutMs = 2_000;
+        private const int HeartbeatTimeoutSeconds = 6;
 
         private readonly DeviceConfig _cfg;
         private readonly string _thingName;
@@ -26,10 +28,16 @@ namespace MqttModbusGateway
         private Task? _workerTask;
         private SerialPort? _port;
         private bool _connected;
-        private readonly BluetoothReconnectKicker _btKicker;
 
         private DateTime _lastResponseUtc = DateTime.MinValue;
         private DateTime _lastOpenFailLogUtc = DateTime.MinValue;
+
+        // Port, na ktorym petla odczytu wykryla blad (np. zanik Bluetooth). Glowna petla
+        // reaguje na to od razu, zamiast czekac na timeout heartbeatu.
+        private volatile SerialPort? _faultedPort;
+
+        // Kiedy (UTC) faktycznie utracono komunikacje - do pomiaru czasu powrotu.
+        private DateTime? _lostAtUtc;
 
         private float _targetTorqueHighNm;
         private float _targetTorqueLowNm;
@@ -58,7 +66,6 @@ namespace MqttModbusGateway
             _thingName = thingName;
             _mqtt = mqtt;
             _logger = logger;
-            _btKicker = new BluetoothReconnectKicker(logger, cfg.DeviceId);
         }
 
         public string Address => _cfg.Address;
@@ -103,9 +110,17 @@ namespace MqttModbusGateway
                         continue;
                     }
 
+                    if (ReferenceEquals(_port, _faultedPort))
+                    {
+                        _logger.LogInformation($"[{_cfg.DeviceId}] Blad odczytu na {_cfg.CleanAddress} - rozlaczam i lacze ponownie od razu.");
+                        await HandleDisconnectAsync(ct, reason: "Read error. Reconnecting");
+                        await Task.Delay(ReconnectDelayMs, ct);
+                        continue;
+                    }
+
                     await SendHeartbeatAsync();
 
-                    if (_connected && DateTime.UtcNow - _lastResponseUtc > TimeSpan.FromSeconds(10))
+                    if (_connected && DateTime.UtcNow - _lastResponseUtc > TimeSpan.FromSeconds(HeartbeatTimeoutSeconds))
                     {
                         _logger.LogInformation($"[{_cfg.DeviceId}] Heartbeat timeout. Reconnecting...");
                         await HandleDisconnectAsync(ct, reason: "Heartbeat timeout. Reconnecting");
@@ -145,8 +160,13 @@ namespace MqttModbusGateway
                 Handshake = Handshake.RequestToSend,
                 Encoding = Encoding.ASCII,
                 NewLine = "\r\n",
-                ReadTimeout = SerialReadTimeoutMs
+                ReadTimeout = SerialReadTimeoutMs,
+                // Bez WriteTimeout zapis przy Handshake.RequestToSend potrafi zawisnac na zawsze,
+                // gdy klucz zniknie (brak CTS) - petla wtedy nie wykryje rozlaczenia.
+                WriteTimeout = SerialWriteTimeoutMs
             };
+
+            bool cleanupHandedToBackground = false;
 
             try
             {
@@ -166,6 +186,7 @@ namespace MqttModbusGateway
 
                     // Jesli Open() kiedys jednak wroci (sukcesem lub bledem), sprzatamy po nim
                     // w tle, zeby nie trzymac zawieszonego uchwytu w nieskonczonosc.
+                    cleanupHandedToBackground = true;
                     _ = openTask.ContinueWith(_ =>
                     {
                         try { if (candidatePort.IsOpen) candidatePort.Close(); } catch { }
@@ -187,7 +208,8 @@ namespace MqttModbusGateway
             }
             catch (Exception ex)
             {
-                if (!ReferenceEquals(_port, candidatePort))
+                // Jesli sprzatanie zlecono w tle (timeout), nie robimy Dispose() drugi raz.
+                if (!cleanupHandedToBackground && !ReferenceEquals(_port, candidatePort))
                 {
                     try { candidatePort.Dispose(); } catch { }
                 }
@@ -211,15 +233,11 @@ namespace MqttModbusGateway
 
                 if (isStateChange)
                 {
+                    if (_connected) MarkLost();
                     _connected = false;
                     _initialStateSent = true;
                     await PublishStateAsync(connected: false, _cts.Token, disconnectReason: ex.Message);
                 }
-
-                // Zamiast biernie czekac, az Windows sam odswiezy polaczenie Bluetooth
-                // (co potrafilo trwac kilka-kilkanascie sekund - "semaphore timeout"),
-                // wymuszamy to aktywnie. Throttlowane wewnatrz (max raz na ~3s).
-                _btKicker.TryKick(_cfg.CleanAddress);
 
                 ClosePort();
             }
@@ -227,11 +245,15 @@ namespace MqttModbusGateway
 
         private async Task ReadLinesAsync(CancellationToken ct)
         {
+            SerialPort? portForFault = null;
+
             try
             {
-                using var reader = new StreamReader(_port!.BaseStream, Encoding.ASCII);
+                var port = _port!;
+                portForFault = port;
+                using var reader = new StreamReader(port.BaseStream, Encoding.ASCII);
 
-                while (!ct.IsCancellationRequested && _port is not null && _port.IsOpen)
+                while (!ct.IsCancellationRequested && port.IsOpen)
                 {
                     string? line = await reader.ReadLineAsync(ct);
 
@@ -246,6 +268,9 @@ namespace MqttModbusGateway
             catch (Exception ex)
             {
                 _logger.LogWarning($"[{_cfg.DeviceId}] Read error/disconnect: {ex.Message}");
+                // Zgloszenie do glownej petli - dotyczy tylko TEGO portu, wiec stara,
+                // porzucona petla odczytu nie zerwie nowego polaczenia.
+                _faultedPort = portForFault;
             }
         }
 
@@ -254,9 +279,19 @@ namespace MqttModbusGateway
             if (string.IsNullOrWhiteSpace(line))
                 return;
 
+            // Kazda linia z urzadzenia (takze odpowiedz na heartbeat) dowodzi, ze lacze zyje.
+            // Wczesniej znacznik ustawiany byl dopiero PO sprawdzeniu aktywnego kroku, wiec
+            // bez aktywnej komendy heartbeat timeout rozlaczalby zywe polaczenie.
+            _lastResponseUtc = DateTime.UtcNow;
+
             if (!_connected)
             {
                 _connected = true;
+                if (_lostAtUtc is DateTime lost)
+                {
+                    _logger.LogInformation($"[{_cfg.DeviceId}] Przywrocono polaczenie po {(DateTime.UtcNow - lost).TotalSeconds:F1} s od utraty.");
+                    _lostAtUtc = null;
+                }
                 await PublishStateAsync(true, _cts.Token);
             }
 
@@ -265,8 +300,6 @@ namespace MqttModbusGateway
                 _logger.LogWarning($"[{_cfg.DeviceId}] Event dropped — no active step command.");
                 return;
             }
-
-            _lastResponseUtc = DateTime.UtcNow;
 
             if (line.StartsWith("E", StringComparison.OrdinalIgnoreCase))
                 return;
@@ -350,11 +383,18 @@ namespace MqttModbusGateway
         {
             if (_connected)
             {
+                MarkLost();
                 _connected = false;
                 await PublishStateAsync(connected: false, ct, disconnectReason: reason);
             }
 
             ClosePort();
+        }
+
+        /// <summary>Zapamietuje moment utraty komunikacji (ostatnia odpowiedz urzadzenia).</summary>
+        private void MarkLost()
+        {
+            _lostAtUtc ??= _lastResponseUtc > DateTime.MinValue ? _lastResponseUtc : DateTime.UtcNow;
         }
 
         private void ClosePort()
