@@ -26,6 +26,7 @@ namespace MqttModbusGateway
         private Task? _workerTask;
         private SerialPort? _port;
         private bool _connected;
+        private readonly BluetoothReconnectKicker _btKicker;
 
         private DateTime _lastResponseUtc = DateTime.MinValue;
         private DateTime _lastOpenFailLogUtc = DateTime.MinValue;
@@ -55,6 +56,7 @@ namespace MqttModbusGateway
             _thingName = thingName;
             _mqtt = mqtt;
             _logger = logger;
+            _btKicker = new BluetoothReconnectKicker(logger, cfg.DeviceId);
         }
 
         public string Address => _cfg.Address;
@@ -175,6 +177,11 @@ namespace MqttModbusGateway
                     _initialStateSent = true;
                     await PublishStateAsync(connected: false, _cts.Token, disconnectReason: ex.Message);
                 }
+
+                // Zamiast biernie czekac, az Windows sam odswiezy polaczenie Bluetooth
+                // (co potrafilo trwac kilka-kilkanascie sekund - "semaphore timeout"),
+                // wymuszamy to aktywnie. Throttlowane wewnatrz (max raz na ~3s).
+                _btKicker.TryKick(_cfg.CleanAddress);
 
                 ClosePort();
             }
