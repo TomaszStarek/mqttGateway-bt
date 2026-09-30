@@ -44,10 +44,12 @@ namespace MqttModbusGateway
 
         private int _lastEventCount = -1;
 
-        private int _currentStepId;
-        private int _currentBatchId;
-        private int _currentUserId;
+        private int? _currentStepId;
+        private int? _currentBatchId;
+        private int? _currentUserId;
         private int _currentDeviceId;
+        private float? _lastTorqueMinNm;
+        private float? _lastTorqueMaxNm;
 
         public DeviceWorker(DeviceConfig cfg, string thingName, IMqttClient mqtt, ILogger<DeviceWorker> logger)
         {
@@ -215,6 +217,12 @@ namespace MqttModbusGateway
                 await PublishStateAsync(true, _cts.Token);
             }
 
+            if (_currentStepId is null || _currentBatchId is null || _currentUserId is null)
+            {
+                _logger.LogWarning($"[{_cfg.DeviceId}] Event dropped — no active step command.");
+                return;
+            }
+
             _lastResponseUtc = DateTime.UtcNow;
 
             if (line.StartsWith("E", StringComparison.OrdinalIgnoreCase))
@@ -261,6 +269,13 @@ namespace MqttModbusGateway
                         $"[{_cfg.DeviceId}] Event #{ev.EventCount} — " +
                         $"StepId: {ev.StepId}, BatchId: {ev.BatchId}, UserId: {ev.UserId}, " +
                         $"Torque: {ev.ConvertedTorqueNm:F2} Nm, Result: {(ev.Result ? "PASS" : "FAIL")}");
+
+                    if (ev.Result)
+                    {
+                        _currentStepId = null;
+                        _currentBatchId = null;
+                        _currentUserId = null;
+                    }
                 }
             }
             else
@@ -358,9 +373,22 @@ namespace MqttModbusGateway
             int angleAbs = Math.Abs(angleSigned);
 
             string judgment = fields[6].Trim().ToUpperInvariant();
-            bool torqueOk = judgment[0] == 'O';
+            bool torqueOk = judgment.Length > 0 && judgment[0] == 'O';
+
+            // Dodatkowe zabezpieczenie: moment musi mieścić się w zakresie z komendy
+            bool torqueInRange = IsTorqueInRange(torque);
+
+            // Kąt nie jest używany (pomiar kąta wyłączony) - zawsze true
             bool angleOk = true;
-            bool resultOk = torqueOk && angleOk;
+
+            bool resultOk = torqueOk && torqueInRange && angleOk;
+
+            if (torqueOk && !torqueInRange)
+            {
+                _logger.LogWarning(
+                    $"[{_cfg.DeviceId}] Urządzenie zwróciło OK, ale moment {torque:F2} Nm " +
+                    $"jest poza zakresem {_targetTorqueLowNm:F2}-{_targetTorqueHighNm:F2} Nm -> FAIL");
+            }
 
             string frameSerial = fields[7].Trim();
 
@@ -387,9 +415,9 @@ namespace MqttModbusGateway
                 Timestamp: timestamp,
                 Result: resultOk,
                 DeviceId: _currentDeviceId,
-                StepId: _currentStepId,
-                BatchId: _currentBatchId,
-                UserId: _currentUserId
+                StepId: _currentStepId!.Value,
+                BatchId: _currentBatchId!.Value,
+                UserId: _currentUserId!.Value
             );
 
             return true;
@@ -560,6 +588,13 @@ namespace MqttModbusGateway
             await Task.Run(() => _port.Write(bytes, 0, bytes.Length));
 
             _logger.LogInformation($"[{_cfg.DeviceId}] TX: {command}");
+        }
+
+        private bool IsTorqueInRange(float torqueNm)
+        {
+            const float eps = 0.001f;
+            return torqueNm >= _targetTorqueLowNm - eps
+                && torqueNm <= _targetTorqueHighNm + eps;
         }
 
         public async Task ExecuteRawAsync(string command)
