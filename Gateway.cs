@@ -214,6 +214,9 @@ namespace MqttModbusGateway
                 .Select(d => d.CleanAddress.ToUpperInvariant())
                 .ToHashSet();
 
+            // Nazwy kluczy BT z konfiguracji (adres inny niz COMx) - bramka paruje i otwiera tylko te klucze
+            BluetoothAutoPairer.SetConfiguredKeys(config.Devices.Where(d => !string.IsNullOrWhiteSpace(d.IpAddress)).Select(d => d.CleanAddress));
+
             // Usunięcie wycofanych wkrętaków (po kluczu portu)
             foreach (var key in _workers.Keys.ToList())
             {

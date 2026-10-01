@@ -155,7 +155,7 @@ namespace MqttModbusGateway
             // Uzywamy zmiennej lokalnej (nie od razu pola _port), zeby jesli Open()
             // sie zawiesi i porzucimy te probe, nie kolidowac z kolejna probka,
             // ktora dostanie swoj wlasny, nowy obiekt SerialPort.
-            var candidatePort = new SerialPort(_cfg.Address, _cfg.BaudRate)
+            var candidatePort = new SerialPort(OperatingSystem.IsWindows() ? "COM1" : _cfg.Address, _cfg.BaudRate)
             {
                 DataBits = 8,
                 Parity = Parity.None,
@@ -173,6 +173,11 @@ namespace MqttModbusGateway
 
             try
             {
+                // Adres z AWS moze byc numerem portu (COM8) albo nazwa klucza Bluetooth - w tym drugim
+                // przypadku bierzemy port, ktory Windows nadal temu kluczowi na TYM komputerze.
+                // Przy nierozwiazywalnej nazwie rzuca wyjatek z opisem (trafia do zwyklego "Cannot open ...").
+                candidatePort.PortName = BluetoothAutoPairer.ResolvePort(_cfg.Address);
+
                 // SerialPort.Open() jest synchroniczne i NIE reaguje na CancellationToken -
                 // jesli sterownik/stos Bluetooth SPP sie zawiesi (znany problem tuz po wlaczeniu
                 // urzadzenia, gdy trwa jeszcze negocjacja polaczenia), to wywolanie potrafi
@@ -268,6 +273,10 @@ namespace MqttModbusGateway
             {
                 _logger.LogInformation($"[{_cfg.DeviceId}] Worker cancelled gracefully ReadLinesAsync.");
             }
+            catch (Exception) when (ct.IsCancellationRequested)
+            {
+                // Zatrzymanie uslugi: port zostal zamkniety w trakcie czytania - to nie jest blad odczytu.
+            }
             catch (Exception ex)
             {
                 _logger.LogWarning($"[{_cfg.DeviceId}] Read error/disconnect: {ex.Message}");
@@ -300,7 +309,10 @@ namespace MqttModbusGateway
 
             if (_currentStepId is null || _currentBatchId is null || _currentUserId is null)
             {
-                _logger.LogWarning($"[{_cfg.DeviceId}] Event dropped — no active step command.");
+                // Odpowiedzi na heartbeat ("E...") przychodza co ok. 1 s - bez aktywnego kroku sa po prostu pomijane.
+                // Ostrzegamy tylko o prawdziwych zdarzeniach dokrecenia ("RE,...").
+                if (line.StartsWith("RE,", StringComparison.OrdinalIgnoreCase))
+                    _logger.LogWarning($"[{_cfg.DeviceId}] Event dropped — no active step command.");
                 return;
             }
 
