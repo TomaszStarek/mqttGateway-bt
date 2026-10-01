@@ -47,6 +47,14 @@ IHost host = Host.CreateDefaultBuilder(args)
     })
     .ConfigureLogging(logging =>
     {
+        // Usuwamy domyslnych dostawcow logow, w tym Event Log. Na tym komputerze zapis do Event Log
+        // konczy sie wyjatkiem (brak System.Threading.AccessControl) i wywala BackgroundService
+        // juz przy pierwszym wpisie Information. Zostaje konsola (przy uruchomieniu .exe), Debug
+        // i plik.
+        logging.ClearProviders();
+        logging.AddConsole();
+        logging.AddDebug();
+
         // Dodatkowy log do pliku: C:\ProgramData\MqttModbusGateway\logs\gateway-yyyyMMdd.log
         // (czytany "na zywo" przez okno "Log na zywo" w MqttGatewayDeployer).
         var logDir = Path.Combine(
