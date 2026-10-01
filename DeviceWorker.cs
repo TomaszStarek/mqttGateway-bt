@@ -27,7 +27,10 @@ namespace MqttModbusGateway
 
         private Task? _workerTask;
         private SerialPort? _port;
-        private bool _connected;
+        private volatile bool _connected;
+
+        /// <summary>Czy klucz odpowiada (uzywane m.in. przez BluetoothAutoPairer).</summary>
+        public bool IsConnected => _connected;
 
         private DateTime _lastResponseUtc = DateTime.MinValue;
         private DateTime _lastOpenFailLogUtc = DateTime.MinValue;

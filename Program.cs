@@ -39,6 +39,16 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MqttModbusService;
 
+// Diagnostyka nagłych zakończeń procesu (np. wyjątek na wątku SerialPort po zaniku Bluetooth):
+// zapis idzie synchronicznie do pliku logu, zanim proces zniknie.
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+    FileLoggerProvider.WriteDirect("CRIT", "AppDomain[0]",
+        $"NIEOBSLUZONY WYJATEK (konczy proces: {e.IsTerminating}): {e.ExceptionObject}");
+TaskScheduler.UnobservedTaskException += (_, e) =>
+    FileLoggerProvider.WriteDirect("WARN", "TaskScheduler[0]", $"Unobserved task exception: {e.Exception}");
+AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+    FileLoggerProvider.WriteDirect("INFO", "AppDomain[0]", "ProcessExit - proces konczy dzialanie.");
+
 IHost host = Host.CreateDefaultBuilder(args)
     .UseWindowsService(options =>
     {

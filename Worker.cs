@@ -1,4 +1,5 @@
-﻿using Microsoft.Extensions.Hosting;
+﻿using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using MqttModbusGateway;
 
@@ -8,12 +9,14 @@ public class ServiceWorker : BackgroundService
 {
     private readonly ILogger<ServiceWorker> _logger;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly IConfiguration _config;
     private Gateway? _gateway;
 
-    public ServiceWorker(ILogger<ServiceWorker> logger, ILoggerFactory loggerFactory)
+    public ServiceWorker(ILogger<ServiceWorker> logger, ILoggerFactory loggerFactory, IConfiguration config)
     {
         _logger = logger;
         _loggerFactory = loggerFactory;
+        _config = config;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -26,6 +29,11 @@ public class ServiceWorker : BackgroundService
         // zalogowanego operatora) zostanie zaakceptowane automatycznie, bez okienka.
         using var bluetoothAutoAcceptor = new BluetoothAutoAcceptor(_logger);
         bluetoothAutoAcceptor.Start();
+
+        // Opcjonalne (domyslnie WYLACZONE - appsettings.json: BluetoothAutoPair): parowanie kluczy,
+        // ktore Windows zna, ale nie sa sparowane. Skanuje tylko gdy jakis klucz jest rozlaczony.
+        using var bluetoothAutoPairer = new BluetoothAutoPairer(_logger, _config, () => _gateway?.HasDisconnectedDevices() ?? false);
+        bluetoothAutoPairer.Start(stoppingToken);
 
         var computerName = Environment.MachineName;
         var thingName = $"{computerName}-bt";

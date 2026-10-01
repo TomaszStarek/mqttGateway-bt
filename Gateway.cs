@@ -315,6 +315,20 @@ namespace MqttModbusGateway
                 cmd.DeviceId);
         }
 
+        /// <summary>True, gdy skonfigurowano co najmniej jeden klucz i choc jeden z nich jest rozlaczony.</summary>
+        public bool HasDisconnectedDevices()
+        {
+            try
+            {
+                var workers = _workers.Values.ToArray();
+                return workers.Length > 0 && workers.Any(w => !w.IsConnected);
+            }
+            catch
+            {
+                return true; // slownik zmieniany rownolegle (nowa konfiguracja) - zakladamy, ze warto sprawdzic
+            }
+        }
+
         public async ValueTask DisposeAsync()
         {
             _stopping = true;
