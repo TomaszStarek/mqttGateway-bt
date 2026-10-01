@@ -75,10 +75,10 @@ namespace MqttModbusGateway
             [FieldOffset(8)] public int authMethod;
 
             // -- poczatek unii (offset 12, max 32 bajty) --
-            [FieldOffset(12)] public uint numericValueOrPasskey; // NumericComparison / PasskeyNotification / Passkey
-            [FieldOffset(12)]
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 16)]
-            public byte[]? legacyPin; // Legacy: PIN (do 16 bajtow)
+            // Wszystkie pola unii sa typami blittable (bez byte[]) - CLR zabrania nakladania
+            // pola referencyjnego na wartosciowe (TypeLoadException).
+            // Legacy PIN (pin[16]) zaczyna sie od offsetu 12, wiec 4-znakowy PIN mieści sie w pierwszym uint.
+            [FieldOffset(12)] public uint numericValueOrPasskey; // NumericComparison / PasskeyNotification / Passkey / pierwsze 4 bajty PIN-u
             [FieldOffset(28)] public byte legacyPinLength;
             // -- koniec unii --
 
@@ -161,11 +161,9 @@ namespace MqttModbusGateway
                     case AuthMethod.Legacy:
                         // Proste modulu BT-SPP (np. w kluczach dynamometrycznych) czesto uzywaja
                         // starego parowania z domyslnym PIN-em "0000".
-                        var pin = System.Text.Encoding.ASCII.GetBytes("0000");
-                        var pinBuf = new byte[16];
-                        Array.Copy(pin, pinBuf, pin.Length);
-                        response.legacyPin = pinBuf;
-                        response.legacyPinLength = (byte)pin.Length;
+                        // PIN "0000" = bajty 0x30 0x30 0x30 0x30 (little-endian, offset 12); reszta pin[16] to zera.
+                        response.numericValueOrPasskey = 0x30303030;
+                        response.legacyPinLength = 4;
                         break;
 
                     default:
