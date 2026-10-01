@@ -36,6 +36,7 @@
 //}
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using MqttModbusService;
 
 IHost host = Host.CreateDefaultBuilder(args)
@@ -43,6 +44,15 @@ IHost host = Host.CreateDefaultBuilder(args)
     {
         // Ta nazwa identyfikuje usługę w przystawce services.msc
         options.ServiceName = "MqttModbusGatewayService";
+    })
+    .ConfigureLogging(logging =>
+    {
+        // Dodatkowy log do pliku: C:\ProgramData\MqttModbusGateway\logs\gateway-yyyyMMdd.log
+        // (czytany "na zywo" przez okno "Log na zywo" w MqttGatewayDeployer).
+        var logDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "MqttModbusGateway", "logs");
+        logging.AddProvider(new FileLoggerProvider(logDir));
     })
     .ConfigureServices(services =>
     {
