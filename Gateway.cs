@@ -27,6 +27,7 @@ namespace MqttModbusGateway
         private readonly Dictionary<string, DeviceWorker> _workers = new();
         private readonly SemaphoreSlim _reconnectLock = new(1, 1);
         private readonly CancellationTokenSource _cts = new();
+        private volatile bool _stopping;
 
         public Gateway(
             string thingName,
@@ -68,6 +69,11 @@ namespace MqttModbusGateway
 
             _mqtt.DisconnectedAsync += e =>
             {
+                // Podczas zamykania (Ctrl+C / stop uslugi) rozlaczenie jest zamierzone, a _cts
+                // bywa juz zutylizowany - nie logujemy "Retrying" i nie startujemy reconnectu.
+                if (_stopping)
+                    return Task.CompletedTask;
+
                 _logger.LogWarning($"MQTT: Disconnected ({e.Reason}). Retrying in background...");
                 _ = Task.Run(() => ReconnectLoopAsync(_cts.Token));
                 return Task.CompletedTask;
@@ -311,6 +317,7 @@ namespace MqttModbusGateway
 
         public async ValueTask DisposeAsync()
         {
+            _stopping = true;
             _cts.Cancel();
             _logger.LogInformation("Stopping gateway…");
 
