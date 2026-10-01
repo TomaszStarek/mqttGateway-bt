@@ -20,12 +20,15 @@ public sealed class FileLoggerProvider : ILoggerProvider
     private readonly BlockingCollection<string> _queue = new(new ConcurrentQueue<string>(), 20_000);
     private readonly Thread _thread;
 
+    private static string? _staticDir;
+
     private FileStream? _stream;
     private string? _streamDate;
 
     public FileLoggerProvider(string directory, int retainDays = 14)
     {
         _dir = directory;
+        _staticDir = directory;
         _retainDays = retainDays;
 
         try { Directory.CreateDirectory(_dir); } catch { /* logowanie nie moze wywrocic uslugi */ }
@@ -33,6 +36,27 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
         _thread = new Thread(WriteLoop) { IsBackground = true, Name = "FileLogger" };
         _thread.Start();
+    }
+
+    /// <summary>
+    /// Synchroniczny zapis bezposrednio do pliku - dla sytuacji awaryjnych (nieobsluzony wyjatek,
+    /// zamykanie procesu), kiedy kolejka w tle moglaby nie zdazyc sie oproznic.
+    /// </summary>
+    public static void WriteDirect(string level, string category, string message)
+    {
+        try
+        {
+            var dir = _staticDir;
+            if (dir is null) return;
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, $"gateway-{DateTime.Now:yyyyMMdd}.log");
+            var msg = message.Replace("\r\n", " | ").Replace('\n', ' ').Replace('\r', ' ');
+            var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}|{level}|{category}|{msg}\r\n";
+            using var fs = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+            var bytes = Encoding.UTF8.GetBytes(line);
+            fs.Write(bytes, 0, bytes.Length);
+        }
+        catch { }
     }
 
     public ILogger CreateLogger(string categoryName) => new FileLogger(categoryName, this);
