@@ -139,7 +139,7 @@ namespace MqttModbusGateway
                 var method = (AuthMethod)p.authenticationMethod;
                 _logger.LogInformation(
                     "[BT-Auth] Zadanie parowania od '{Name}' (metoda={Method}) - akceptuje automatycznie.",
-                    p.deviceInfo.szName, method);
+                    (p.deviceInfo.szName ?? "").Trim(), method);
 
                 var response = new BLUETOOTH_AUTHENTICATE_RESPONSE
                 {

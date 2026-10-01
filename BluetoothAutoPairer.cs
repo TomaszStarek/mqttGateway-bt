@@ -155,7 +155,7 @@ namespace MqttModbusGateway
                         if (ct.IsCancellationRequested) break;
                         if (dev.fAuthenticated != 0) continue; // juz sparowane
 
-                        var name = dev.szName ?? "";
+                        var name = (dev.szName ?? "").Trim();
                         if (!_patterns.Any(r => SafeMatch(r, name))) continue;
 
                         long mac = dev.Address & 0xFFFFFFFFFFFF;
