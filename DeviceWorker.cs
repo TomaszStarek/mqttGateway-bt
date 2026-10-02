@@ -94,6 +94,7 @@ namespace MqttModbusGateway
             }
 
             ClosePort();
+            AbandonPendingOpen();
             await PublishStateAsync(connected: false, CancellationToken.None, disconnectReason: "Worker stopped by app");
             _logger.LogInformation($"[{_cfg.DeviceId}] Worker stopped.");
         }
@@ -147,64 +148,90 @@ namespace MqttModbusGateway
         private Task? _readTask;
         private const int OpenTimeoutMs = 8_000;
 
+        // Trwajaca (zawieszona) proba otwarcia portu. Sterownik Bluetooth SPP potrafi trzymac
+        // Open() nawet ~20 s ("semaphore timeout"). Zamiast porzucac taka probe po 8 s i od razu
+        // zaczynac kolejna (co dawalo kilka rownoleglych prob na ten sam port i wyrzucalo do kosza
+        // polaczenie, ktore sie w koncu nawiazalo), czekamy na WYNIK TEJ SAMEJ proby:
+        //  - sukces  -> port jest od razu uzywany (krotszy czas powrotu po utracie BT),
+        //  - blad    -> dopiero wtedy startuje nastepna proba.
+        private Task? _pendingOpenTask;
+        private SerialPort? _pendingOpenPort;
+        private DateTime _lastOpenHangLogUtc = DateTime.MinValue;
+
         private async Task TryOpenPortAsync(CancellationToken ct)
         {
-            ClosePort();
-            await Task.Delay(300, ct);
-
-            // Uzywamy zmiennej lokalnej (nie od razu pola _port), zeby jesli Open()
-            // sie zawiesi i porzucimy te probe, nie kolidowac z kolejna probka,
-            // ktora dostanie swoj wlasny, nowy obiekt SerialPort.
-            var candidatePort = new SerialPort(OperatingSystem.IsWindows() ? "COM1" : _cfg.Address, _cfg.BaudRate)
-            {
-                DataBits = 8,
-                Parity = Parity.None,
-                StopBits = StopBits.One,
-                Handshake = Handshake.RequestToSend,
-                Encoding = Encoding.ASCII,
-                NewLine = "\r\n",
-                ReadTimeout = SerialReadTimeoutMs,
-                // Bez WriteTimeout zapis przy Handshake.RequestToSend potrafi zawisnac na zawsze,
-                // gdy klucz zniknie (brak CTS) - petla wtedy nie wykryje rozlaczenia.
-                WriteTimeout = SerialWriteTimeoutMs
-            };
-
-            bool cleanupHandedToBackground = false;
-
             try
             {
-                // Adres z AWS moze byc numerem portu (COM8) albo nazwa klucza Bluetooth - w tym drugim
-                // przypadku bierzemy port, ktory Windows nadal temu kluczowi na TYM komputerze.
-                // Przy nierozwiazywalnej nazwie rzuca wyjatek z opisem (trafia do zwyklego "Cannot open ...").
-                candidatePort.PortName = BluetoothAutoPairer.ResolvePort(_cfg.Address);
+                if (_pendingOpenTask is null)
+                {
+                    ClosePort();
+                    await Task.Delay(300, ct);
 
-                // SerialPort.Open() jest synchroniczne i NIE reaguje na CancellationToken -
-                // jesli sterownik/stos Bluetooth SPP sie zawiesi (znany problem tuz po wlaczeniu
-                // urzadzenia, gdy trwa jeszcze negocjacja polaczenia), to wywolanie potrafi
-                // zablokowac sie na zawsze, zamrazajac cala petle ponawiania. Dlatego pilnujemy
-                // twardego limitu czasu i porzucamy proby, ktore go przekrocza.
-                var openTask = Task.Run(() => candidatePort.Open());
+                    var newPort = new SerialPort(OperatingSystem.IsWindows() ? "COM1" : _cfg.Address, _cfg.BaudRate)
+                    {
+                        DataBits = 8,
+                        Parity = Parity.None,
+                        StopBits = StopBits.One,
+                        Handshake = Handshake.RequestToSend,
+                        Encoding = Encoding.ASCII,
+                        NewLine = "\r\n",
+                        ReadTimeout = SerialReadTimeoutMs,
+                        // Bez WriteTimeout zapis przy Handshake.RequestToSend potrafi zawisnac na zawsze,
+                        // gdy klucz zniknie (brak CTS) - petla wtedy nie wykryje rozlaczenia.
+                        WriteTimeout = SerialWriteTimeoutMs
+                    };
+
+                    // Adres z AWS moze byc numerem portu (COM8) albo nazwa klucza Bluetooth - w tym drugim
+                    // przypadku bierzemy port, ktory Windows nadal temu kluczowi na TYM komputerze.
+                    // Przy nierozwiazywalnej nazwie rzuca wyjatek z opisem (trafia do zwyklego "Cannot open ...").
+                    try
+                    {
+                        newPort.PortName = BluetoothAutoPairer.ResolvePort(_cfg.Address);
+                    }
+                    catch
+                    {
+                        try { newPort.Dispose(); } catch { }
+                        throw;
+                    }
+
+                    _pendingOpenPort = newPort;
+                    // SerialPort.Open() jest synchroniczne i NIE reaguje na CancellationToken.
+                    _pendingOpenTask = Task.Run(() => newPort.Open());
+                }
+
+                var openTask = _pendingOpenTask;
+                var candidatePort = _pendingOpenPort!;
+
                 var winner = await Task.WhenAny(openTask, Task.Delay(OpenTimeoutMs, ct));
+                ct.ThrowIfCancellationRequested();
 
                 if (winner != openTask)
                 {
-                    _logger.LogWarning(
-                        $"[{_cfg.DeviceId}] Otwieranie portu {_cfg.CleanAddress} nie odpowiedzialo przez {OpenTimeoutMs} ms " +
-                        "(zawieszone Open() - typowe tuz po wlaczeniu klucza) - porzucam te probe i probuje dalej.");
-
-                    // Jesli Open() kiedys jednak wroci (sukcesem lub bledem), sprzatamy po nim
-                    // w tle, zeby nie trzymac zawieszonego uchwytu w nieskonczonosc.
-                    cleanupHandedToBackground = true;
-                    _ = openTask.ContinueWith(_ =>
+                    if (DateTime.UtcNow - _lastOpenHangLogUtc > TimeSpan.FromSeconds(30))
                     {
-                        try { if (candidatePort.IsOpen) candidatePort.Close(); } catch { }
-                        try { candidatePort.Dispose(); } catch { }
-                    }, TaskScheduler.Default);
+                        _logger.LogWarning(
+                            $"[{_cfg.DeviceId}] Open() portu {_cfg.CleanAddress} trwa dluzej niz {OpenTimeoutMs} ms " +
+                            "(typowe tuz po wlaczeniu klucza) - czekam na wynik tej samej proby, nie zaczynam nowej.");
+                        _lastOpenHangLogUtc = DateTime.UtcNow;
+                    }
 
-                    throw new TimeoutException($"Timeout otwierania portu {_cfg.CleanAddress} ({OpenTimeoutMs} ms).");
+                    // Proba zostaje w _pendingOpenTask - sprawdzimy ja przy nastepnym wywolaniu.
+                    throw new TimeoutException($"Open() portu {_cfg.CleanAddress} jeszcze trwa (>{OpenTimeoutMs} ms).");
                 }
 
-                await openTask; // jesli Open() rzucilo wyjatek (bez zawieszenia), przekaz go do catch ponizej
+                // Open() zakonczylo sie (sukcesem lub bledem) - zwalniamy "slot" proby.
+                _pendingOpenTask = null;
+                _pendingOpenPort = null;
+
+                try
+                {
+                    await openTask; // przy bledzie wyjatek jest tu OBSERWOWANY (nie wpada w UnobservedTaskException)
+                }
+                catch
+                {
+                    try { candidatePort.Dispose(); } catch { }
+                    throw;
+                }
 
                 _port = candidatePort;
                 _initialStateSent = true;
@@ -216,20 +243,10 @@ namespace MqttModbusGateway
             }
             catch (Exception ex)
             {
-                // Jesli sprzatanie zlecono w tle (timeout), nie robimy Dispose() drugi raz.
-                if (!cleanupHandedToBackground && !ReferenceEquals(_port, candidatePort))
-                {
-                    try { candidatePort.Dispose(); } catch { }
-                }
-
                 // UWAGA: poprzednio warunek logowania byl identyczny z warunkiem
-                // "czy to jest zmiana stanu" (_connected || !_initialStateSent).
-                // Po PIERWSZEJ nieudanej probie _initialStateSent ustawiane bylo na
-                // true, wiec KAZDA kolejna nieudana proba przestawala byc logowana -
-                // usluga w tle nadal probowala otwierac port co ok. 1,3s w kolko,
-                // ale w logu wygladalo to tak, jakby sie poddala. Teraz logujemy
-                // pierwsza probe zawsze, a kolejne co najmniej co 30s, zeby bylo
-                // widac, ze worker ciagle probuje sie polaczyc (i dlaczego sie nie udaje).
+                // "czy to jest zmiana stanu" (_connected || !_initialStateSent) - po PIERWSZEJ
+                // nieudanej probie kolejne przestawaly byc logowane. Teraz logujemy pierwsza
+                // probe zawsze, a kolejne co najmniej co 30 s.
                 bool isStateChange = _connected || !_initialStateSent;
                 bool shouldLog = isStateChange || (DateTime.UtcNow - _lastOpenFailLogUtc > TimeSpan.FromSeconds(30));
 
@@ -247,8 +264,28 @@ namespace MqttModbusGateway
                     await PublishStateAsync(connected: false, _cts.Token, disconnectReason: ex.Message);
                 }
 
-                ClosePort();
+                ClosePort(); // zamyka ewentualny juz przyjety _port; trwajaca proba w _pendingOpen* zostaje nietknieta
             }
+        }
+
+        /// <summary>
+        /// Przy zatrzymaniu workera porzuca trwajaca probe Open(); gdy kiedys wroci, port jest
+        /// zamykany w tle, a ewentualny wyjatek obserwowany (zeby nie trafil do UnobservedTaskException).
+        /// </summary>
+        private void AbandonPendingOpen()
+        {
+            var task = _pendingOpenTask;
+            var port = _pendingOpenPort;
+            _pendingOpenTask = null;
+            _pendingOpenPort = null;
+            if (task is null || port is null) return;
+
+            _ = task.ContinueWith(t =>
+            {
+                _ = t.Exception; // oznacza wyjatek jako zaobserwowany
+                try { if (port.IsOpen) port.Close(); } catch { }
+                try { port.Dispose(); } catch { }
+            }, TaskScheduler.Default);
         }
 
         private async Task ReadLinesAsync(CancellationToken ct)
