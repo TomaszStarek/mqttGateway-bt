@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -92,6 +92,9 @@ namespace MqttModbusGateway
         [DllImport("bthprops.cpl", SetLastError = true)]
         private static extern uint BluetoothSetServiceState(
             IntPtr hRadio, ref BLUETOOTH_DEVICE_INFO pbtdi, ref Guid pGuidService, uint dwServiceFlags);
+
+        [DllImport("bthprops.cpl", SetLastError = true)]
+        private static extern uint BluetoothGetDeviceInfo(IntPtr hRadio, ref BLUETOOTH_DEVICE_INFO pbtdi);
 
         private readonly ILogger _logger;
         private readonly Func<bool> _shouldScan;
@@ -206,7 +209,7 @@ namespace MqttModbusGateway
                         _lastAttempt[mac] = DateTime.UtcNow;
 
 
-                        TryPair(dev, name);
+                        await TryPairAsync(dev, name, ct);
                     }
                 }
                 catch (Exception ex)
@@ -364,11 +367,7 @@ namespace MqttModbusGateway
             _sppTries[mac] = (DateTime.UtcNow, t.Tries + 1);
 
             var d = dev;
-            var guid = SerialPortServiceClass;
-            if (t.Tries >= 1)
-                BluetoothSetServiceState(IntPtr.Zero, ref d, ref guid, 0x00); // 2. i kolejne proby: wylacz, a potem wlacz
-
-            uint rs = BluetoothSetServiceState(IntPtr.Zero, ref d, ref guid, BLUETOOTH_SERVICE_ENABLE);
+            uint rs = EnableSpp(ref d, t.Tries >= 1); // 2. i kolejne proby: wylacz, a potem wlacz
             _logger.LogInformation("[BT-Pair] '{Name}' jest sparowany, ale nie ma portu COM - wlaczam usluge SPP (proba {N}, kod {Code}).", name, t.Tries + 1, rs);
         }
 
@@ -415,7 +414,34 @@ namespace MqttModbusGateway
             return found;
         }
 
-        private void TryPair(BLUETOOTH_DEVICE_INFO dev, string name)
+        /// <summary>Wlacza usluge SPP. KLUCZOWE: przed wlaczeniem odswieza dane urzadzenia (BluetoothGetDeviceInfo) -
+        /// struktura zwrocona przez skan / przez parowanie bywa nieaktualna (np. fAuthenticated=0), a Windows
+        /// wtedy zwraca sukces, ale nie tworzy portu COM.</summary>
+        private static uint EnableSpp(ref BLUETOOTH_DEVICE_INFO d, bool toggle)
+        {
+            var fresh = new BLUETOOTH_DEVICE_INFO { dwSize = Marshal.SizeOf<BLUETOOTH_DEVICE_INFO>(), Address = d.Address };
+            if (BluetoothGetDeviceInfo(IntPtr.Zero, ref fresh) == ERROR_SUCCESS) d = fresh;
+
+            var guid = SerialPortServiceClass;
+            if (toggle)
+            {
+                BluetoothSetServiceState(IntPtr.Zero, ref d, ref guid, 0x00);
+                Thread.Sleep(1500);
+            }
+            return BluetoothSetServiceState(IntPtr.Zero, ref d, ref guid, BLUETOOTH_SERVICE_ENABLE);
+        }
+
+        private static async Task<bool> WaitForPortAsync(long mac, int seconds, CancellationToken ct)
+        {
+            for (int i = 0; i < seconds; i++)
+            {
+                if (FindPresentPorts(mac).Count > 0) return true;
+                await Task.Delay(1000, ct);
+            }
+            return FindPresentPorts(mac).Count > 0;
+        }
+
+        private async Task TryPairAsync(BLUETOOTH_DEVICE_INFO dev, string name, CancellationToken ct)
         {
             _logger.LogInformation("[BT-Pair] Znaleziono niesparowany klucz '{Name}' - probuje sparowac.", name);
 
@@ -435,12 +461,28 @@ namespace MqttModbusGateway
                 return;
             }
 
+            long mac = dev.Address & 0xFFFFFFFFFFFF;
             _logger.LogInformation("[BT-Pair] Sparowano '{Name}'. Wlaczam usluge portu szeregowego (SPP).", name);
 
-            var guid = SerialPortServiceClass;
-            uint rs = BluetoothSetServiceState(IntPtr.Zero, ref d, ref guid, BLUETOOTH_SERVICE_ENABLE);
-            if (rs != ERROR_SUCCESS)
-                _logger.LogWarning("[BT-Pair] BluetoothSetServiceState(SPP) zwrocil kod {Code} - port COM moze pojawic sie dopiero po chwili.", rs);
+            // Daj Windows chwile na dokonczenie parowania, potem wlacz SPP z ODSWIEZONYMI danymi urzadzenia.
+            await Task.Delay(1500, ct);
+            uint rs = EnableSpp(ref d, false);
+            _logger.LogInformation("[BT-Pair] '{Name}': wlaczenie SPP po parowaniu - kod {Code}.", name, rs);
+
+            if (await WaitForPortAsync(mac, 10, ct))
+            {
+                _logger.LogInformation("[BT-Pair] '{Name}': port COM utworzony ({Ports}).", name, string.Join(",", FindPresentPorts(mac)));
+                return;
+            }
+
+            // Nadal brak portu: jednorazowo wylacz i wlacz usluge.
+            rs = EnableSpp(ref d, true);
+            _logger.LogInformation("[BT-Pair] '{Name}': brak portu po 10 s - ponowne wlaczenie SPP (wylacz/wlacz), kod {Code}.", name, rs);
+
+            if (await WaitForPortAsync(mac, 10, ct))
+                _logger.LogInformation("[BT-Pair] '{Name}': port COM utworzony ({Ports}).", name, string.Join(",", FindPresentPorts(mac)));
+            else
+                _logger.LogWarning("[BT-Pair] '{Name}': Windows nie utworzyl portu COM (usluga SPP). Sprawdz, czy klucz jest wlaczony i w zasiegu.", name);
         }
 
         public void Dispose()

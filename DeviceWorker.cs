@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
 using MQTTnet;
 using MQTTnet.Protocol;
 using System;
@@ -158,6 +158,19 @@ namespace MqttModbusGateway
         private SerialPort? _pendingOpenPort;
         private DateTime _lastOpenHangLogUtc = DateTime.MinValue;
 
+        /// <summary>Czytelny powod niepowodzenia otwarcia portu. Dla wirtualnego portu Bluetooth Windows zglasza
+        /// "Could not find file 'COMx'" / "port does not exist", gdy port jest zarejestrowany, ale klucz nie odpowiada
+        /// (wylaczony, uspiony, poza zasiegiem albo polaczony z innym urzadzeniem).</summary>
+        private static string DescribeOpenError(Exception ex)
+        {
+            if (ex is FileNotFoundException || ex is DirectoryNotFoundException
+                || ex.Message.Contains("does not exist", StringComparison.OrdinalIgnoreCase))
+            {
+                return ex.Message + " [klucz wylaczony / poza zasiegiem / zajety przez inne urzadzenie? Port COM istnieje w systemie]";
+            }
+            return ex.Message;
+        }
+
         private async Task TryOpenPortAsync(CancellationToken ct)
         {
             try
@@ -252,7 +265,7 @@ namespace MqttModbusGateway
 
                 if (shouldLog)
                 {
-                    _logger.LogInformation($"[{_cfg.DeviceId}] Cannot open {_cfg.CleanAddress}: {ex.Message} (ciagle probuje ponownie...)");
+                    _logger.LogInformation($"[{_cfg.DeviceId}] Cannot open {_cfg.CleanAddress}: {DescribeOpenError(ex)} (ciagle probuje ponownie...)");
                     _lastOpenFailLogUtc = DateTime.UtcNow;
                 }
 
@@ -261,7 +274,7 @@ namespace MqttModbusGateway
                     if (_connected) MarkLost();
                     _connected = false;
                     _initialStateSent = true;
-                    await PublishStateAsync(connected: false, _cts.Token, disconnectReason: ex.Message);
+                    await PublishStateAsync(connected: false, _cts.Token, disconnectReason: DescribeOpenError(ex));
                 }
 
                 ClosePort(); // zamyka ewentualny juz przyjety _port; trwajaca proba w _pendingOpen* zostaje nietknieta
