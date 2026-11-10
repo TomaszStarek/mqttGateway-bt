@@ -54,6 +54,16 @@ namespace MqttModbusGateway
 
         private readonly SemaphoreSlim _commandLock = new(1, 1);
 
+        // Ostatnie limity momentu (AT037) i informacja, czy dotarly do klucza. Gdy komenda przyszla w chwili
+        // rozlaczenia BT, limity sa wysylane ponownie zaraz po powrocie polaczenia.
+        private string? _lastAt037;
+        private volatile bool _at037Pending;
+
+        // Kolejka wynikow na czas chwilowej niedostepnosci AWS (ok. 5-6 s przy ServerShuttingDown).
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(string Topic, string Json)> _outbox = new();
+        private readonly SemaphoreSlim _outboxLock = new(1, 1);
+        private const int OutboxMaxItems = 500;
+
         private int _lastEventCount = -1;
 
         private int? _currentStepId;
@@ -74,6 +84,7 @@ namespace MqttModbusGateway
         public string Address => _cfg.Address;
         public string DeviceId => _cfg.DeviceId;
         public string CleanAddress => _cfg.CleanAddress;
+        public DeviceConfig Config => _cfg;
 
         public void Start()
         {
@@ -107,6 +118,8 @@ namespace MqttModbusGateway
             {
                 try
                 {
+                    await FlushOutboxAsync(ct);
+
                     if (_port is null || !_port.IsOpen)
                     {
                         await TryOpenPortAsync(ct);
@@ -138,7 +151,11 @@ namespace MqttModbusGateway
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogCritical($"[{_cfg.DeviceId}] Loop error: {ex.Message}");
+                    // Zaniki lacza BT (timeout zapisu, zerwane lacze, zajety port) to zdarzenia oczekiwane - WARN, nie CRIT.
+                    if (ex is IOException or TimeoutException or InvalidOperationException or UnauthorizedAccessException)
+                        _logger.LogWarning($"[{_cfg.DeviceId}] Loop error: {ex.Message}");
+                    else
+                        _logger.LogCritical($"[{_cfg.DeviceId}] Loop error: {ex.Message}");
                     await HandleDisconnectAsync(ct, reason: ex.Message);
                     await Task.Delay(ReconnectDelayMs, ct);
                 }
@@ -250,7 +267,7 @@ namespace MqttModbusGateway
                 _initialStateSent = true;
                 await PublishStateAsync(connected: true, ct);
 
-                _readTask = Task.Run(() => ReadLinesAsync(ct), ct);
+                _readTask = Task.Run(() => ReadLinesAsync(candidatePort, ct), ct);
 
                 _logger.LogInformation($"[{_cfg.DeviceId}] Port {_cfg.CleanAddress} opened.");
             }
@@ -301,13 +318,13 @@ namespace MqttModbusGateway
             }, TaskScheduler.Default);
         }
 
-        private async Task ReadLinesAsync(CancellationToken ct)
+        private async Task ReadLinesAsync(SerialPort port, CancellationToken ct)
         {
             SerialPort? portForFault = null;
 
             try
             {
-                var port = _port!;
+                // Port dostajemy jako argument: pole _port bywa juz wyzerowane (ClosePort), zanim ta petla wystartuje.
                 portForFault = port;
                 using var reader = new StreamReader(port.BaseStream, Encoding.ASCII);
 
@@ -355,6 +372,9 @@ namespace MqttModbusGateway
                     _lostAtUtc = null;
                 }
                 await PublishStateAsync(true, _cts.Token);
+
+                if (_at037Pending)
+                    _ = Task.Run(ReapplyPendingJobAsync);
             }
 
             if (_currentStepId is null || _currentBatchId is null || _currentUserId is null)
@@ -362,7 +382,15 @@ namespace MqttModbusGateway
                 // Odpowiedzi na heartbeat ("E...") przychodza co ok. 1 s - bez aktywnego kroku sa po prostu pomijane.
                 // Ostrzegamy tylko o prawdziwych zdarzeniach dokrecenia ("RE,...").
                 if (line.StartsWith("RE,", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Klucz ponawia ostatnia ramke wyniku - jesli to wynik juz opublikowany (ten sam numer zdarzenia),
+                    // to zwykly duplikat po PASS, nie utrata danych.
+                    var parts = line.Split(',');
+                    if (parts.Length > 1 && int.TryParse(parts[1].Trim(), out int repeatedCount) && repeatedCount == _lastEventCount)
+                        return;
+
                     _logger.LogWarning($"[{_cfg.DeviceId}] Event dropped — no active step command.");
+                }
                 return;
             }
 
@@ -383,7 +411,7 @@ namespace MqttModbusGateway
                 {
                     _lastEventCount = ev.EventCount;
 
-                    await PublishJsonAsync($"{_thingName}/log", ev, _cts.Token);
+                    await PublishJsonAsync($"{_thingName}/log", ev, _cts.Token, queueIfOffline: true);
 
                     var res = new ResultsToSend(
                         DeviceId: ev.DeviceId,
@@ -404,7 +432,7 @@ namespace MqttModbusGateway
                     );
 
                     // POPRAWIONO LINIKĘ PONIŻEJ (dodano cudzysłów i nawias klamrowy)
-                    await PublishJsonAsync($"{_thingName}/{_cfg.CleanAddress}/data", res, _cts.Token);
+                    await PublishJsonAsync($"{_thingName}/{_cfg.CleanAddress}/data", res, _cts.Token, queueIfOffline: true);
 
                     _logger.LogInformation(
                         $"[{_cfg.DeviceId}] Event #{ev.EventCount} — " +
@@ -416,6 +444,7 @@ namespace MqttModbusGateway
                         _currentStepId = null;
                         _currentBatchId = null;
                         _currentUserId = null;
+                        _at037Pending = false;
                     }
                 }
             }
@@ -628,23 +657,87 @@ namespace MqttModbusGateway
             await PublishJsonAsync($"{_thingName}/{_cfg.CleanAddress}/state", payload, ct);
         }
 
-        private async Task PublishJsonAsync<T>(string topic, T payload, CancellationToken ct)
+        private async Task PublishJsonAsync<T>(string topic, T payload, CancellationToken ct, bool queueIfOffline = false)
         {
-            if (!_mqtt.IsConnected)
-                return;
-
             var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions
             {
                 PropertyNamingPolicy = JsonNamingPolicy.CamelCase
             });
 
-            var msg = new MqttApplicationMessageBuilder()
-                .WithTopic(topic)
-                .WithPayload(json)
-                .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce)
-                .Build();
+            if (queueIfOffline)
+            {
+                // Wyniki dokrecania nie moga zginac przy chwilowym rozlaczeniu z AWS: gdy wyslanie sie nie uda,
+                // trafiaja do kolejki i sa wysylane po powrocie MQTT (kolejnosc zachowana).
+                if (!_outbox.IsEmpty || !_mqtt.IsConnected || !await TrySendAsync(topic, json, ct))
+                {
+                    EnqueueOutbox(topic, json);
+                    await FlushOutboxAsync(ct);
+                }
+                return;
+            }
 
-            await _mqtt.PublishAsync(msg, ct);
+            if (!_mqtt.IsConnected)
+                return;
+
+            await TrySendAsync(topic, json, ct);
+        }
+
+        private async Task<bool> TrySendAsync(string topic, string json, CancellationToken ct)
+        {
+            try
+            {
+                var msg = new MqttApplicationMessageBuilder()
+                    .WithTopic(topic)
+                    .WithPayload(json)
+                    .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce)
+                    .Build();
+
+                await _mqtt.PublishAsync(msg, ct);
+                return true;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"[{_cfg.DeviceId}] MQTT publish nieudany ({topic}): {ex.Message}");
+                return false;
+            }
+        }
+
+        private void EnqueueOutbox(string topic, string json)
+        {
+            while (_outbox.Count >= OutboxMaxItems && _outbox.TryDequeue(out var dropped))
+                _logger.LogError($"[{_cfg.DeviceId}] Kolejka MQTT pelna - usunieto najstarszy wynik ({dropped.Topic}).");
+
+            _outbox.Enqueue((topic, json));
+            _logger.LogWarning($"[{_cfg.DeviceId}] MQTT niedostepny - wynik czeka w kolejce ({_outbox.Count}): {topic}");
+        }
+
+        private async Task FlushOutboxAsync(CancellationToken ct)
+        {
+            if (_outbox.IsEmpty || !_mqtt.IsConnected)
+                return;
+
+            if (!await _outboxLock.WaitAsync(0))
+                return;
+
+            try
+            {
+                while (_mqtt.IsConnected && _outbox.TryPeek(out var item))
+                {
+                    if (!await TrySendAsync(item.Topic, item.Json, ct))
+                        break;
+
+                    _outbox.TryDequeue(out _);
+                    _logger.LogInformation($"[{_cfg.DeviceId}] Wyslano wynik z kolejki: {item.Topic}");
+                }
+            }
+            finally
+            {
+                _outboxLock.Release();
+            }
         }
 
         public async Task ConfigureJobAsync(
@@ -676,8 +769,23 @@ namespace MqttModbusGateway
                     deviceId);
 
                 string at037 = string.Format(CultureInfo.InvariantCulture, "AT037,{0:00.00},{1:00.00}", torqueHighNm, torqueLowNm);
-                await ExecuteRawInternalAsync(at037);
-                await Task.Delay(500);
+
+                _lastAt037 = at037;
+                bool sent = false;
+                try
+                {
+                    sent = await ExecuteRawInternalAsync(at037);
+                }
+                catch (Exception ex) when (ex is IOException or TimeoutException or InvalidOperationException or UnauthorizedAccessException)
+                {
+                    _logger.LogWarning($"[{_cfg.DeviceId}] Nie udalo sie wyslac limitow (AT037): {ex.Message}");
+                }
+
+                _at037Pending = !sent;
+                if (!sent)
+                    _logger.LogWarning($"[{_cfg.DeviceId}] Limity momentu (AT037) nie dotarly do klucza - zostana wyslane po powrocie polaczenia.");
+                else
+                    await Task.Delay(500);
 
                 ///angle turned off for now, because they dont use angle
                 //string at045 = string.Format(CultureInfo.InvariantCulture, "AT045,{0:00.00}", triggerNm);
@@ -722,20 +830,50 @@ namespace MqttModbusGateway
             _currentDeviceId = deviceId;
         }
 
-        private async Task ExecuteRawInternalAsync(string command)
+        private async Task<bool> ExecuteRawInternalAsync(string command)
         {
-            if (_port is null || !_port.IsOpen)
+            var port = _port;
+            if (port is null || !port.IsOpen)
             {
                 _logger.LogInformation($"[{_cfg.DeviceId}] Port not open");
-                return;
+                return false;
             }
 
             string frame = command.TrimEnd() + "\r\n";
             byte[] bytes = Encoding.ASCII.GetBytes(frame);
 
-            await Task.Run(() => _port.Write(bytes, 0, bytes.Length));
+            await Task.Run(() => port.Write(bytes, 0, bytes.Length));
 
             _logger.LogInformation($"[{_cfg.DeviceId}] TX: {command}");
+            return true;
+        }
+
+        /// <summary>Po powrocie polaczenia wysyla ponownie limity momentu, ktore nie dotarly do klucza.</summary>
+        private async Task ReapplyPendingJobAsync()
+        {
+            bool locked = false;
+            try
+            {
+                await _commandLock.WaitAsync();
+                locked = true;
+
+                if (!_at037Pending || _lastAt037 is null)
+                    return;
+
+                if (await ExecuteRawInternalAsync(_lastAt037))
+                {
+                    _at037Pending = false;
+                    _logger.LogInformation($"[{_cfg.DeviceId}] Ponowiono ustawienie limitow (AT037) po powrocie polaczenia.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"[{_cfg.DeviceId}] Ponowne ustawienie limitow (AT037) nie powiodlo sie: {ex.Message}");
+            }
+            finally
+            {
+                if (locked) _commandLock.Release();
+            }
         }
 
         private bool IsTorqueInRange(float torqueNm)

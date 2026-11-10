@@ -233,8 +233,17 @@ namespace MqttModbusGateway
 
                 string key = deviceCfg.CleanAddress.ToUpperInvariant(); // np. "COM2"
 
-                if (_workers.ContainsKey(key))
+                if (_workers.TryGetValue(key, out var existingWorker))
                 {
+                    // Po kazdym ponownym polaczeniu z AWS (np. ServerShuttingDown) przychodzi ta sama
+                    // konfiguracja. Nie restartujemy wtedy workerow - restart rozlaczalby wszystkie klucze
+                    // naraz i potrafil zostawic zablokowane porty COM.
+                    if (existingWorker.Config == deviceCfg)
+                    {
+                        _logger.LogInformation($"[Config] Bez zmian: {deviceCfg.DeviceId} na porcie {key} - worker dziala dalej.");
+                        continue;
+                    }
+
                     await StopAndRemoveWorkerAsync(key);
                 }
 
